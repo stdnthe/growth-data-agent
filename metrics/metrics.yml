@@ -1,0 +1,199 @@
+version: 1
+name: olist_growth_metrics
+description: Olist 增长分析指标语义层（面向 SQL 生成约束）
+metrics:
+  - id: gmv
+    name_zh: 成交总额GMV
+    definition: 支付口径成交总额，不计入 canceled 或 unavailable 订单。
+    formula: SUM(vw_fact_items.price + vw_fact_items.freight_value) 或 SUM(vw_fact_items.line_gmv)
+    grain: day/week/month
+    sql_hint: 优先使用 vw_fact_items，按 order_purchase_ts 聚合。
+
+  - id: paid_orders
+    name_zh: 支付订单数
+    definition: paid-like 状态订单数（delivered/shipped/approved/invoiced）。
+    formula: COUNT(DISTINCT vw_eligible_orders.order_id)
+    grain: day/week/month
+    sql_hint: 优先用 vw_eligible_orders 或 vw_fact_items 去重统计。
+
+  - id: aov
+    name_zh: 客单价
+    definition: 每个支付订单对应的平均 GMV。
+    formula: gmv / paid_orders
+    grain: day/week/month
+    sql_hint: 分母必须是 DISTINCT order_id。
+
+  - id: unique_buyers
+    name_zh: 下单买家数
+    definition: 有支付订单的去重买家数。
+    formula: COUNT(DISTINCT vw_fact_items.customer_unique_id)
+    grain: day/week/month
+    sql_hint: 使用 customer_unique_id 而非 customer_id 以避免重复账号。
+
+  - id: gmv_per_buyer
+    name_zh: 人均GMV
+    definition: 每位下单买家贡献的平均 GMV。
+    formula: gmv / unique_buyers
+    grain: day/week/month
+    sql_hint: 与 unique_buyers 口径保持一致。
+
+  - id: orders_per_buyer
+    name_zh: 人均订单数
+    definition: 每位下单买家的平均订单数。
+    formula: paid_orders / unique_buyers
+    grain: day/week/month
+    sql_hint: 分子按 DISTINCT order_id，分母按 DISTINCT customer_unique_id。
+
+  - id: new_customers
+    name_zh: 新客数
+    definition: 首次下单发生在统计期内的买家数。
+    formula: COUNT(DISTINCT customer_unique_id where first_purchase_ts in period)
+    grain: week/month
+    sql_hint: 先按全量数据求每个 customer_unique_id 的 MIN(order_purchase_ts)。
+
+  - id: returning_customers
+    name_zh: 老客数
+    definition: 统计期内下单且历史已有首单的买家数。
+    formula: unique_buyers - new_customers
+    grain: week/month
+    sql_hint: 新老客拆分时保持同一统计周期。
+
+  - id: repeat_purchase_rate
+    name_zh: 复购率
+    definition: 统计期内老客占买家比重。
+    formula: returning_customers / unique_buyers
+    grain: week/month
+    sql_hint: 避免把重复下单次数当作复购率分子。
+
+  - id: new_customer_order_share
+    name_zh: 新客订单占比
+    definition: 统计期内来自新客的订单数占比。
+    formula: new_customer_orders / paid_orders
+    grain: week/month
+    sql_hint: new_customer_orders 需基于首单月份匹配。
+
+  - id: d7_retention
+    name_zh: D7留存率
+    definition: 首单后7天内再次下单的用户占比。
+    formula: retained_users_d7 / cohort_users
+    grain: cohort_month
+    sql_hint: 先确定 cohort 首单日，再判断 second_order_ts <= first_order_ts + 7 day。
+
+  - id: d30_retention
+    name_zh: D30留存率
+    definition: 首单后30天内再次下单的用户占比。
+    formula: retained_users_d30 / cohort_users
+    grain: cohort_month
+    sql_hint: 与 D7 逻辑一致，窗口改为 30 天。
+
+  - id: cancellation_rate
+    name_zh: 取消率
+    definition: canceled 订单数占全部订单数比重。
+    formula: canceled_orders / total_orders
+    grain: day/week/month
+    sql_hint: 基于 orders 表 order_status 统计，不走 paid-like 视图。
+
+  - id: approval_rate
+    name_zh: 审批通过率
+    definition: approved+ 订单占全部订单比重。
+    formula: approved_like_orders / total_orders
+    grain: day/week/month
+    sql_hint: approved_like_orders 包含 delivered/shipped/approved/invoiced。
+
+  - id: delivered_orders
+    name_zh: 完成妥投订单数
+    definition: order_status=delivered 的订单数。
+    formula: COUNT(DISTINCT vw_delivered_orders.order_id)
+    grain: day/week/month
+    sql_hint: 交付相关分析优先 vw_delivered_orders。
+
+  - id: on_time_delivery_rate
+    name_zh: 准时送达率
+    definition: 妥投时间早于或等于预计送达时间的占比。
+    formula: AVG(CASE WHEN delivered_ts <= estimated_ts THEN 1 ELSE 0 END)
+    grain: week/month
+    sql_hint: 使用 vw_delivered_orders 的 order_delivered_customer_ts 与 order_estimated_delivery_ts。
+
+  - id: late_delivery_rate
+    name_zh: 延迟送达率
+    definition: 妥投时间晚于预计送达时间的占比。
+    formula: AVG(CASE WHEN delivered_ts > estimated_ts THEN 1 ELSE 0 END)
+    grain: week/month
+    sql_hint: late_delivery_rate = 1 - on_time_delivery_rate（在同口径下）。
+
+  - id: avg_delivery_days
+    name_zh: 平均送达天数
+    definition: 从下单到妥投的平均天数。
+    formula: AVG(date_diff('day', order_purchase_ts, order_delivered_customer_ts))
+    grain: week/month
+    sql_hint: 仅统计 delivered 且时间字段不为空记录。
+
+  - id: p90_delivery_days
+    name_zh: P90送达天数
+    definition: 下单到妥投时长的 90 分位。
+    formula: quantile_cont(date_diff('day', order_purchase_ts, order_delivered_customer_ts), 0.9)
+    grain: month
+    sql_hint: DuckDB 可使用 quantile_cont。
+
+  - id: average_review_score
+    name_zh: 平均评分
+    definition: 订单评价均分。
+    formula: AVG(order_reviews.review_score)
+    grain: week/month
+    sql_hint: 通常与 delivered 订单关联分析。
+
+  - id: low_rating_rate
+    name_zh: 低评分率
+    definition: review_score <= 2 的评价占比。
+    formula: AVG(CASE WHEN review_score <= 2 THEN 1 ELSE 0 END)
+    grain: week/month
+    sql_hint: 关注履约异常期的低评分变化。
+
+  - id: high_rating_rate
+    name_zh: 高评分率
+    definition: review_score >= 4 的评价占比。
+    formula: AVG(CASE WHEN review_score >= 4 THEN 1 ELSE 0 END)
+    grain: week/month
+    sql_hint: 可与 on_time_delivery_rate 做相关分析。
+
+  - id: active_sku
+    name_zh: 活跃SKU数
+    definition: 统计期内有成交的去重 SKU 数。
+    formula: COUNT(DISTINCT vw_fact_items.product_id)
+    grain: day/week/month
+    sql_hint: 基于 vw_fact_items 统计。
+
+  - id: active_sellers
+    name_zh: 活跃商家数
+    definition: 统计期内有成交的去重 seller 数。
+    formula: COUNT(DISTINCT vw_fact_items.seller_id)
+    grain: day/week/month
+    sql_hint: 可与 GMV 同时输出观察集中度。
+
+  - id: gmv_top10_state_share
+    name_zh: Top10州GMV占比
+    definition: GMV 前10州合计占总 GMV 比例。
+    formula: sum(gmv of top10 states) / total gmv
+    grain: month
+    sql_hint: 先按 customer_state 聚合排序，再做窗口合计。
+
+  - id: freight_ratio
+    name_zh: 运费占比
+    definition: 运费金额占 GMV 比重。
+    formula: SUM(freight_value) / SUM(price + freight_value)
+    grain: day/week/month
+    sql_hint: 使用 vw_fact_items 的 freight_value 和 line_gmv。
+
+  - id: installment_order_share
+    name_zh: 分期订单占比
+    definition: payment_installments > 1 的订单占比。
+    formula: installments_orders / paid_orders
+    grain: week/month
+    sql_hint: 用 order_payments 与 vw_eligible_orders 关联到订单粒度。
+
+  - id: avg_payment_value
+    name_zh: 平均支付金额
+    definition: 每笔 payment 记录的平均 payment_value。
+    formula: AVG(order_payments.payment_value)
+    grain: day/week/month
+    sql_hint: 若需订单口径，先按 order_id 聚合后再求均值。

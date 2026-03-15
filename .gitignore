@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.venv/
+.streamlit/
+__pycache__/
+*.py[cod]
+
+# Local dataset and database artifacts
+# keep dataset and duckdb for demo deployment
+
+# Editor/cache
+.ipynb_checkpoints/

@@ -1,0 +1,32 @@
+{"id": 1, "question": "近30天GMV走势（按天）"}
+{"id": 2, "question": "上个月订单数、GMV、客单价分别是多少？"}
+{"id": 3, "question": "按州(state)看GMV Top 10（近90天）"}
+{"id": 4, "question": "准时送达率按月趋势（最近6个月）"}
+{"id": 5, "question": "延迟送达订单平均评分 vs 准时订单平均评分（最近6个月）"}
+{"id": 6, "question": "新客占比按月趋势（今年以来）"}
+{"id": 7, "question": "最近12个月每月支付订单数"}
+{"id": 8, "question": "最近12个月每月GMV和AOV"}
+{"id": 9, "question": "最近90天活跃SKU数按周趋势"}
+{"id": 10, "question": "最近90天活跃商家数按周趋势"}
+{"id": 11, "question": "取消率按月趋势（最近6个月）"}
+{"id": 12, "question": "近60天每天新客数和老客数"}
+{"id": 13, "question": "今年以来各州GMV排名"}
+{"id": 14, "question": "最近6个月平均送达天数按月变化"}
+{"id": 15, "question": "最近6个月低评分率按月趋势"}
+{"id": 16, "question": "最近6个月高评分率按月趋势"}
+{"id": 17, "question": "比较最近30天与前30天的GMV变化"}
+{"id": 18, "question": "本月到今天的支付订单数与GMV"}
+{"id": 19, "question": "近90天各支付方式 payment_type 的GMV占比"}
+{"id": 20, "question": "近90天运费占比趋势（按周）"}
+{"id": 21, "question": "近180天准时与延迟订单的评分分布"}
+{"id": 22, "question": "最近6个月每月D30留存率"}
+{"id": 23, "question": "最近6个月每月D7留存率"}
+{"id": 24, "question": "近90天每周订单数、人均订单数、人均GMV"}
+{"id": 25, "question": "最近3个月Top 20 SKU按GMV"}
+{"id": 26, "question": "最近3个月Top 20 卖家按GMV"}
+{"id": 27, "question": "今年以来每月新客订单占比"}
+{"id": 28, "question": "最近90天各州准时送达率"}
+{"id": 29, "question": "最近90天按城市看GMV Top 20"}
+{"id": 30, "question": "最近180天评价均分按月趋势"}
+{"id": 31, "question": "分期订单占比按月趋势（最近6个月）"}
+{"id": 32, "question": "最近90天每周的平均支付金额"}
