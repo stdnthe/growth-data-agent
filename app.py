@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from agent.attribution import GmvAttributionReport, analyze_gmv_change_drivers, build_gmv_summary
 from agent.insight import generate_insight
-from agent.llm_sql import generate_sql
+from agent.llm_sql import generate_sql, resolve_llm_config
 from agent.metrics_store import MetricsStore
 from agent.sql_guard import SQLGuard, SQLGuardError
 
@@ -19,7 +19,12 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("OLIST_DB_PATH", str(PROJECT_ROOT / "olist.duckdb")))
 METRICS_PATH = PROJECT_ROOT / "metrics" / "metrics.yml"
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+LLM_RUNTIME = resolve_llm_config()
+LLM_PROVIDER = str(LLM_RUNTIME["provider"])
+MODEL = str(LLM_RUNTIME["model"])
+ACTIVE_API_KEY = str(LLM_RUNTIME["api_key"] or "")
+ACTIVE_API_KEY_NAME = str(LLM_RUNTIME["api_key_name"])
+ACTIVE_API_KEY_SOURCE = str(LLM_RUNTIME["api_key_source"])
 
 SAMPLE_QUESTIONS = [
     "近30天GMV走势（按天）",
@@ -231,7 +236,8 @@ def render_gmv_attribution(report: GmvAttributionReport) -> None:
 def main() -> None:
     st.set_page_config(page_title="Olist Growth Copilot", layout="wide")
     st.title("Olist Growth Copilot")
-    st.caption("电商/增长分析对话式数据分析助手（DuckDB + Streamlit + OpenAI SQL）")
+    provider_label = "OpenAI" if LLM_PROVIDER == "openai" else "DeepSeek"
+    st.caption(f"电商/增长分析对话式数据分析助手（DuckDB + Streamlit + {provider_label} SQL）")
 
     with st.sidebar:
         st.header("配置")
@@ -244,9 +250,10 @@ def main() -> None:
         attribution_top_n = st.slider("Attribution Top N", min_value=3, max_value=15, value=5, step=1)
         default_limit = st.number_input("Default LIMIT", min_value=100, max_value=10000, value=2000, step=100)
 
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if use_llm and not api_key:
-            st.info("未配置 OPENAI_API_KEY：将自动使用规则 fallback 生成 SQL。")
+        if use_llm and not ACTIVE_API_KEY:
+            st.info(f"未检测到 {ACTIVE_API_KEY_NAME}（环境变量或 Keychain）：将自动使用规则 fallback 生成 SQL。")
+        elif use_llm and ACTIVE_API_KEY_SOURCE == "keychain":
+            st.caption(f"已从 macOS Keychain 读取 {ACTIVE_API_KEY_NAME}。")
 
         st.divider()
         st.subheader("示例问题")

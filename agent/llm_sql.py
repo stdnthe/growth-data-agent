@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -12,6 +14,61 @@ load_dotenv()
 
 
 DATA_MAX_DATE_EXPR = "(SELECT CAST(MAX(order_purchase_ts) AS DATE) FROM orders)"
+
+
+def _read_key_from_keychain(service_name: str, account_name: str | None = None) -> str:
+    if sys.platform != "darwin":
+        return ""
+    if not service_name.strip():
+        return ""
+
+    cmd = ["security", "find-generic-password", "-s", service_name, "-w"]
+    if account_name and account_name.strip():
+        cmd.extend(["-a", account_name.strip()])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except OSError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def resolve_llm_config(model: str | None = None) -> dict[str, str | None]:
+    provider = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+
+    if provider == "openai":
+        resolved_provider = "openai"
+        resolved_model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        api_key_name = "OPENAI_API_KEY"
+        keychain_service = os.getenv("OPENAI_KEYCHAIN_SERVICE", "growth-analysis-agent/OPENAI_API_KEY").strip()
+        keychain_account = os.getenv("OPENAI_KEYCHAIN_ACCOUNT", os.getenv("USER", "")).strip()
+    else:
+        resolved_provider = "deepseek"
+        resolved_model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").strip() or None
+        api_key_name = "DEEPSEEK_API_KEY"
+        keychain_service = os.getenv("DEEPSEEK_KEYCHAIN_SERVICE", "growth-analysis-agent/DEEPSEEK_API_KEY").strip()
+        keychain_account = os.getenv("DEEPSEEK_KEYCHAIN_ACCOUNT", os.getenv("USER", "")).strip()
+
+    api_key_source = "env"
+    if not api_key:
+        api_key = _read_key_from_keychain(keychain_service, keychain_account)
+        api_key_source = "keychain" if api_key else "missing"
+
+    return {
+        "provider": resolved_provider,
+        "model": resolved_model,
+        "api_key": api_key or None,
+        "base_url": base_url,
+        "api_key_name": api_key_name,
+        "api_key_source": api_key_source,
+        "keychain_service": keychain_service,
+        "keychain_account": keychain_account or None,
+    }
 
 
 def _clean_llm_output(text: str) -> str:
@@ -36,7 +93,17 @@ def _build_system_prompt(metrics_context: str) -> str:
         + "5) For delivered/fulfillment metrics prioritize vw_delivered_orders.\n"
         + "6) For relative dates (today/last 30 days/last month), use dataset max date as anchor, not system date.\n"
         + "   Use max(order_purchase_ts) from the same main table/view used by the query.\n"
-        + "7) Keep metric definitions consistent with the metric dictionary below.\n"
+        + "7) DuckDB date arithmetic: use interval syntax only, e.g. date - INTERVAL 30 DAY, date - INTERVAL 1 MONTH.\n"
+        + "   Never use DATE_SUB(), DATE_ADD(), or DATEADD() — they are not supported in DuckDB.\n"
+        + "8) Never use generate_series() — it is not supported in DuckDB. Use GROUP BY on existing data instead.\n"
+        + "9) Never add SQL comments (-- or /* */). Output clean SQL only.\n"
+        + "10) For date formatting use strftime('%Y-%m', col), never DATE_FORMAT().\n"
+        + "11) order_reviews table has no order_purchase_ts column. To filter reviews by date use review_creation_date.\n"
+        + "    To anchor dates for review queries use: (SELECT CAST(MAX(review_creation_date) AS DATE) FROM order_reviews).\n"
+        + "12) For period-over-period comparisons (current vs previous), always use UNION ALL to produce one row per period.\n"
+        + "    Do not output a wide table with two columns side by side.\n"
+        + "13) Only SELECT the metrics explicitly requested by the user. Do not add extra columns.\n"
+        + "14) Keep metric definitions consistent with the metric dictionary below.\n"
         + metrics_context
     )
 
@@ -198,17 +265,20 @@ def generate_sql(
     use_llm: bool = True,
     model: str | None = None,
 ) -> tuple[str, str]:
-    model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    config = resolve_llm_config(model=model)
+    provider = str(config["provider"])
+    resolved_model = str(config["model"])
+    api_key = str(config["api_key"] or "")
+    base_url = config["base_url"]
 
     if not question.strip():
         raise ValueError("Question is empty.")
 
     if use_llm and api_key:
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, base_url=base_url)
         try:
             response = client.chat.completions.create(
-                model=model,
+                model=resolved_model,
                 temperature=0,
                 messages=[
                     {"role": "system", "content": _build_system_prompt(metrics_context)},
@@ -223,5 +293,5 @@ def generate_sql(
         except Exception as e:  # noqa: BLE001
             return _anchor_relative_date(_fallback_sql(question)), f"fallback_llm_error: {type(e).__name__}"
 
-    reason = "fallback_no_key" if use_llm and not api_key else "fallback_disabled"
+    reason = f"fallback_no_key_{provider}" if use_llm and not api_key else "fallback_disabled"
     return _anchor_relative_date(_fallback_sql(question)), reason
