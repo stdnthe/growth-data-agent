@@ -8,8 +8,9 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from agent.attribution import GmvAttributionReport, analyze_gmv_change_drivers, build_gmv_summary
+from agent.attribution import GmvAttributionReport, analyze_gmv_change_drivers, build_gmv_summary, generate_attribution_narrative
 from agent.insight import generate_insight
+from agent.intent_router import route
 from agent.llm_sql import generate_sql, resolve_llm_config
 from agent.metrics_store import MetricsStore
 from agent.sql_guard import SQLGuard, SQLGuardError
@@ -233,6 +234,73 @@ def render_gmv_attribution(report: GmvAttributionReport) -> None:
             _render_driver_table(report.seller_drops, "拖累增长：商家（Seller）", "seller_id")
 
 
+def _run_attribution(question: str, window_days: int, top_n: int) -> None:
+    st.caption(f"识别为归因问题，分析窗口：{window_days} 天")
+    try:
+        report = analyze_gmv_change_drivers(
+            db_path=DB_PATH,
+            window_days=window_days,
+            top_n=top_n,
+        )
+    except Exception as e:  # noqa: BLE001
+        st.error(f"归因计算失败：{e}")
+        return
+
+    narrative = generate_attribution_narrative(report, question, LLM_RUNTIME)
+    st.info(narrative)
+    render_gmv_attribution(report)
+
+
+def _run_retrieval(
+    question: str,
+    use_llm: bool,
+    show_sql: bool,
+    show_chart: bool,
+    chart_type: str,
+    default_limit: int,
+) -> None:
+    try:
+        metrics_context = load_metrics_context(str(METRICS_PATH))
+    except Exception as e:  # noqa: BLE001
+        st.error(f"读取指标字典失败：{e}")
+        return
+
+    try:
+        sql, source = generate_sql(
+            question=question,
+            metrics_context=metrics_context,
+            use_llm=use_llm,
+            model=MODEL,
+        )
+    except Exception as e:  # noqa: BLE001
+        st.error(f"SQL 生成失败：{e}")
+        return
+
+    guard = SQLGuard(default_limit=default_limit)
+    try:
+        safe_sql = guard.validate_and_rewrite(sql)
+    except SQLGuardError as e:
+        st.error(f"SQL Guard 拒绝执行：{e}")
+        if show_sql:
+            st.code(sql, language="sql")
+        return
+
+    if show_sql:
+        st.code(safe_sql, language="sql")
+
+    try:
+        result_df = run_duckdb_query(safe_sql)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"SQL 执行失败：{e}")
+        return
+
+    st.success(f"查询成功（SQL 来源：{source}，模型：{MODEL}）")
+    st.dataframe(result_df, use_container_width=True)
+    if show_chart:
+        render_chart(result_df, chart_type)
+    st.info(generate_insight(result_df))
+
+
 def main() -> None:
     st.set_page_config(page_title="Olist Growth Copilot", layout="wide")
     st.title("Olist Growth Copilot")
@@ -245,8 +313,6 @@ def main() -> None:
         show_sql = st.toggle("Show SQL", value=True)
         show_chart = st.toggle("Show Chart", value=True)
         chart_type = st.selectbox("Chart Type", options=["Auto", "Line", "Bar", "Area", "Scatter"], index=0)
-        enable_gmv_attribution = st.toggle("Enable GMV Attribution", value=True)
-        attribution_window_days = st.selectbox("Attribution Window (days)", options=[7, 14, 30, 60, 90], index=2)
         attribution_top_n = st.slider("Attribution Top N", min_value=3, max_value=15, value=5, step=1)
         default_limit = st.number_input("Default LIMIT", min_value=100, max_value=10000, value=2000, step=100)
 
@@ -280,57 +346,12 @@ def main() -> None:
         st.warning("请先输入问题。")
         return
 
-    try:
-        metrics_context = load_metrics_context(str(METRICS_PATH))
-    except Exception as e:  # noqa: BLE001
-        st.error(f"读取指标字典失败：{e}")
-        return
+    route_result = route(question)
 
-    try:
-        sql, source = generate_sql(
-            question=question,
-            metrics_context=metrics_context,
-            use_llm=use_llm,
-            model=MODEL,
-        )
-    except Exception as e:  # noqa: BLE001
-        st.error(f"SQL 生成失败：{e}")
-        return
-
-    guard = SQLGuard(default_limit=int(default_limit))
-    try:
-        safe_sql = guard.validate_and_rewrite(sql)
-    except SQLGuardError as e:
-        st.error(f"SQL Guard 拒绝执行：{e}")
-        if show_sql:
-            st.code(sql, language="sql")
-        return
-
-    if show_sql:
-        st.code(safe_sql, language="sql")
-
-    try:
-        result_df = run_duckdb_query(safe_sql)
-    except Exception as e:  # noqa: BLE001
-        st.error(f"SQL 执行失败：{e}")
-        return
-
-    st.success(f"查询成功（SQL 来源：{source}，模型：{MODEL}）")
-    st.dataframe(result_df, use_container_width=True)
-    if show_chart:
-        render_chart(result_df, chart_type)
-    st.info(generate_insight(result_df))
-
-    if enable_gmv_attribution:
-        try:
-            report = analyze_gmv_change_drivers(
-                db_path=DB_PATH,
-                window_days=int(attribution_window_days),
-                top_n=int(attribution_top_n),
-            )
-            render_gmv_attribution(report)
-        except Exception as e:  # noqa: BLE001
-            st.warning(f"GMV 归因计算失败：{e}")
+    if route_result.intent == "attribution":
+        _run_attribution(question, route_result.window_days, int(attribution_top_n))
+    else:
+        _run_retrieval(question, use_llm, show_sql, show_chart, chart_type, int(default_limit))
 
 
 if __name__ == "__main__":

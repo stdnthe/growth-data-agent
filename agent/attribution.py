@@ -5,6 +5,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+from openai import OpenAI
 
 
 @dataclass
@@ -277,6 +278,60 @@ ORDER BY {order_by}
 LIMIT {n}
 """
     return conn.execute(query).fetchdf()
+
+
+def generate_attribution_narrative(
+    report: GmvAttributionReport,
+    question: str,
+    llm_config: dict,
+) -> str:
+    api_key = str(llm_config.get("api_key") or "")
+    if not api_key:
+        return build_gmv_summary(report)
+
+    trend = "下滑" if report.gmv_delta < 0 else "增长"
+    key_df = report.all_drops if report.gmv_delta < 0 else report.all_gains
+    top_rows = (
+        key_df[["dimension", "dimension_value", "contribution"]]
+        .head(3)
+        .to_string(index=False)
+        if not key_df.empty
+        else "无"
+    )
+
+    prompt = f"""你是一名增长数据分析师，请根据以下归因数据用中文回答用户问题。
+
+用户问题：{question}
+
+=== 归因数据（分析窗口：最近 {report.window_days} 天）===
+当期 GMV：{report.gmv_current:,.2f}  前期 GMV：{report.gmv_previous:,.2f}
+GMV 变化：{report.gmv_delta:+,.2f}  变化率：{_fmt_pct(report.gmv_change_rate)}
+
+拆解（GMV = 订单量 × AOV）：
+- 订单量效应：{report.order_effect:+,.2f}（{report.orders_current:,} vs {report.orders_previous:,} 单）
+- AOV 效应：{report.aov_effect:+,.2f}（{_fmt_money(report.aov_current)} vs {_fmt_money(report.aov_previous)}）
+
+主要{trend}维度 Top3（维度 / 对象 / 贡献额）：
+{top_rows}
+
+=== 要求 ===
+- 直接回答"为什么"，聚焦 2-3 个最关键因素
+- 不要重复列出上方的数字表格，用自然语言描述
+- 简洁有洞察，100-150 字以内"""
+
+    try:
+        client = OpenAI(
+            api_key=api_key,
+            base_url=llm_config.get("base_url") or None,
+        )
+        resp = client.chat.completions.create(
+            model=str(llm_config.get("model", "deepseek-chat")),
+            temperature=0.3,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception:  # noqa: BLE001
+        return build_gmv_summary(report)
 
 
 def analyze_gmv_change_drivers(

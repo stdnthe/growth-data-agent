@@ -219,6 +219,29 @@ PYTHONPATH=. python eval/run_eval.py
 
 输出报告结构：
 
+---
+
+## Statsig + LLM Agent 示例
+
+仓库里补了一份面向 Agent 场景的 Statsig 接入示例，适合参考下面几类能力怎么接：
+
+- `feature gate` 控制 Agent 是否灰度放量
+- `dynamic config` 控制模型、工具开关、最大步数
+- `prompt` 作为运行时控制面
+- `event` 记录时延、采纳率、运行结果
+- `online eval` 回传线上评分
+
+可直接查看：
+
+- [docs/statsig_llm_agent.md](docs/statsig_llm_agent.md)
+- [examples/statsig_agent_example.py](examples/statsig_agent_example.py)
+
+这个示例默认不影响当前应用运行，也没有把 Statsig 依赖强行塞进主流程依赖里；如果你要单独跑它，再安装：
+
+```bash
+pip install statsig-python-core statsig-ai openai
+```
+
 ```json
 {
   "summary": { "semantic_pass_rate_pct": 94.12, "compliance_pass_rate_pct": 100.0, "..." : "..." },
