@@ -1,0 +1,2 @@
+# Optional: the core application runs without LangSmith.
+langsmith>=0.3.13

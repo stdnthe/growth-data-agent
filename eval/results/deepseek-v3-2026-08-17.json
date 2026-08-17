@@ -1,0 +1,446 @@
+{
+  "evaluation_metadata": {
+    "evaluated_at_utc": "2026-08-17T07:21:19Z",
+    "questions_file": "eval/questions.jsonl",
+    "provider": "deepseek",
+    "model": "deepseek-ai/DeepSeek-V3",
+    "strict_result_contract": "exact columns + complete result equivalence",
+    "numeric_tolerance": 0.05
+  },
+  "requested_mode": "llm",
+  "sql_source_counts": {
+    "llm": 40
+  },
+  "summary": {
+    "total": 40,
+    "generation_success_rate_pct": 100.0,
+    "guard_pass_rate_pct": 97.5,
+    "execution_success_rate_pct": 77.5,
+    "semantic_pass_rate_pct": 10.0,
+    "semantic_denominator": 40,
+    "compliance_pass_rate_pct": 95.0,
+    "compliance_denominator": 40,
+    "end_to_end_task_success_rate_pct": 10.0,
+    "end_to_end_success": 4
+  },
+  "by_difficulty": {
+    "easy": {
+      "total": 14,
+      "execution_success_rate_pct": 85.71,
+      "semantic_pass_rate_pct": 21.43,
+      "end_to_end_task_success_rate_pct": 21.43
+    },
+    "hard": {
+      "total": 7,
+      "execution_success_rate_pct": 100.0,
+      "semantic_pass_rate_pct": 0.0,
+      "end_to_end_task_success_rate_pct": 0.0
+    },
+    "medium": {
+      "total": 19,
+      "execution_success_rate_pct": 63.16,
+      "semantic_pass_rate_pct": 5.26,
+      "end_to_end_task_success_rate_pct": 5.26
+    }
+  },
+  "by_category": {
+    "customer": {
+      "total": 7,
+      "execution_success_rate_pct": 85.71,
+      "semantic_pass_rate_pct": 0.0,
+      "end_to_end_task_success_rate_pct": 0.0
+    },
+    "delivery": {
+      "total": 6,
+      "execution_success_rate_pct": 50.0,
+      "semantic_pass_rate_pct": 16.67,
+      "end_to_end_task_success_rate_pct": 16.67
+    },
+    "gmv": {
+      "total": 13,
+      "execution_success_rate_pct": 100.0,
+      "semantic_pass_rate_pct": 15.38,
+      "end_to_end_task_success_rate_pct": 15.38
+    },
+    "orders": {
+      "total": 6,
+      "execution_success_rate_pct": 66.67,
+      "semantic_pass_rate_pct": 16.67,
+      "end_to_end_task_success_rate_pct": 16.67
+    },
+    "review": {
+      "total": 3,
+      "execution_success_rate_pct": 100.0,
+      "semantic_pass_rate_pct": 0.0,
+      "end_to_end_task_success_rate_pct": 0.0
+    },
+    "seller": {
+      "total": 5,
+      "execution_success_rate_pct": 40.0,
+      "semantic_pass_rate_pct": 0.0,
+      "end_to_end_task_success_rate_pct": 0.0
+    }
+  },
+  "failures": [
+    {
+      "id": 1,
+      "question": "近30天GMV走势（按天）",
+      "difficulty": "easy",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['day', 'gmv'], expected ['dt', 'gmv']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n)\nSELECT \n  strftime('%Y-%m-%d', order_purchase_ts) AS day,\n  SUM(price + freight_value) AS gmv\nFROM vw_fact_items, max_date\nWHERE order_purchase_ts >= max_date.anchor_date - INTERVAL 30 DAY\n  AND order_purchase_ts < max_date.anchor_date\nGROUP BY day\nORDER BY day;"
+    },
+    {
+      "id": 2,
+      "question": "上个月订单数、GMV、客单价分别是多少？",
+      "difficulty": "easy",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "numeric mismatch at row 0, column paid_orders: got 5815, expected 6421",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS last_date FROM vw_fact_items\n),\nlast_month_metrics AS (\n    SELECT \n        COUNT(DISTINCT order_id) AS paid_orders,\n        SUM(price + freight_value) AS gmv,\n        SUM(price + freight_value) / COUNT(DISTINCT order_id) AS aov\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT last_date - INTERVAL 1 MONTH FROM max_date)\n    AND order_purchase_ts < (SELECT last_date FROM max_date)\n)\nSELECT \n    paid_orders,\n    gmv"
+    },
+    {
+      "id": 3,
+      "question": "按州(state)看GMV Top 10（近90天）",
+      "difficulty": "easy",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['state', 'gmv'], expected ['customer_state', 'gmv']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\nstate_gmv AS (\n    SELECT \n        c.customer_state AS state,\n        SUM(fi.price + fi.freight_value) AS gmv\n    FROM vw_fact_items fi\n    JOIN customers c ON fi.customer_id = c.customer_id\n    WHERE fi.order_purchase_ts >= (SELECT anchor_date - INTERVAL 90 DAY FROM max_date)\n    GROUP BY c.customer_state\n)\nSELECT \n    state,\n    gmv\nFROM state_gmv\nORDER BY gmv DESC\nLIMIT 10;"
+    },
+    {
+      "id": 4,
+      "question": "准时送达率按月趋势（最近6个月）",
+      "difficulty": "medium",
+      "category": "delivery",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: Referenced column \"anchor_date\" was not found because the FROM clause is missing\n\nLINE 6:     strftime('%Y-%m', anchor_date - INTERVAL 5 MONTH) AS month_start,\n                              ^",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_delivered_orders\n),\ndate_range AS (\n  SELECT \n    strftime('%Y-%m', anchor_date - INTERVAL 5 MONTH) AS month_start,\n    strftime('%Y-%m', anchor_date) AS month_end\n)\nSELECT \n  strftime('%Y-%m', order_purchase_ts) AS month,\n  AVG(CASE WHEN order_delivered_customer_ts <= order_estimated_delivery_ts THEN 1 ELSE 0 END) AS on_time_delivery_rate\nFROM vw_delivered_orders\nWHERE \n  strftime('%Y-%m', order_purchase_ts)"
+    },
+    {
+      "id": 5,
+      "question": "延迟送达订单平均评分 vs 准时订单平均评分（最近6个月）",
+      "difficulty": "medium",
+      "category": "delivery",
+      "failure_stage": "semantic",
+      "failure_detail": "row count mismatch: got 14, expected 2",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_delivered_orders\n),\ndelivery_periods AS (\n    SELECT \n        strftime('%Y-%m', order_purchase_ts) AS month,\n        CASE WHEN order_delivered_customer_ts > order_estimated_delivery_ts THEN 'late' ELSE 'on_time' END AS delivery_status,\n        AVG(r.review_score) AS avg_review_score\n    FROM vw_delivered_orders d\n    JOIN order_reviews r ON d.order_id = r.order_id\n    WHERE order_purchase_ts >= (SELECT anch"
+    },
+    {
+      "id": 6,
+      "question": "新客占比按月趋势（今年以来）",
+      "difficulty": "hard",
+      "category": "customer",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['month', 'new_customer_ratio'], expected ['month', 'paid_orders', 'new_customer_orders', 'new_customer_ratio']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date \n    FROM vw_fact_items\n),\nfirst_purchases AS (\n    SELECT \n        customer_unique_id,\n        MIN(CAST(order_purchase_ts AS DATE)) AS first_purchase_date\n    FROM vw_fact_items\n    GROUP BY customer_unique_id\n),\nmonthly_metrics AS (\n    SELECT\n        strftime('%Y-%m', CAST(order_purchase_ts AS DATE)) AS month,\n        COUNT(DISTINCT CASE WHEN CAST(order_purchase_ts AS DATE) = first_purchase_date THEN vw_fact_ite"
+    },
+    {
+      "id": 7,
+      "question": "最近12个月每月支付订单数",
+      "difficulty": "easy",
+      "category": "orders",
+      "failure_stage": "guard",
+      "failure_detail": "Table/view is not allowed: unnest",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_eligible_orders\n),\ndate_range AS (\n  SELECT \n    strftime('%Y-%m', anchor_date - INTERVAL (n) MONTH) AS year_month,\n    anchor_date - INTERVAL (n) MONTH AS start_date,\n    anchor_date - INTERVAL (n-1) MONTH AS end_date\n  FROM max_date\n  CROSS JOIN UNNEST(GENERATE_SERIES(0, 11)) AS t(n)\n)\nSELECT \n  dr.year_month,\n  COUNT(DISTINCT o.order_id) AS paid_orders\nFROM date_range dr\nLEFT JOIN vw_eligible_orders o \n  O"
+    },
+    {
+      "id": 8,
+      "question": "最近12个月每月GMV和AOV",
+      "difficulty": "easy",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "value mismatch at row 0, column month: got '2017-09', expected '2017-09-01 00:00:00'",
+      "sql_source": "llm",
+      "generated_sql": "WITH monthly_metrics AS (\n  SELECT \n    strftime('%Y-%m', order_purchase_ts) AS month,\n    SUM(line_gmv) AS gmv,\n    COUNT(DISTINCT order_id) AS paid_orders\n  FROM vw_fact_items\n  WHERE order_purchase_ts >= (SELECT CAST(MAX(order_purchase_ts) AS DATE) - INTERVAL 12 MONTH FROM vw_fact_items)\n  GROUP BY 1\n)\nSELECT \n  month,\n  gmv,\n  gmv / paid_orders AS aov\nFROM monthly_metrics\nORDER BY month;"
+    },
+    {
+      "id": 9,
+      "question": "最近90天活跃SKU数按周趋势",
+      "difficulty": "medium",
+      "category": "seller",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: No function matches the given name and argument types 'date_trunc(STRING_LITERAL, TIMESTAMP[])'. You might need to add explicit type casts.\n\tCandidate functions:\n\tdate_trunc(VARCHAR, DATE) -> TIMESTAMP\n\tdate_trunc(VARCHAR, INTERVAL) -> INTERVAL\n\tdate_trunc(VARCHAR, TIMESTAMP) -> TIMESTAMP\n\tdate_trunc(VARCHAR, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 11:   GROUP BY date_trunc('week', date)\n                    ^",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\ndate_ranges AS (\n  SELECT \n    date_trunc('week', date) AS week_start,\n    date_trunc('week', date) + INTERVAL 6 DAY AS week_end\n  FROM \n    (SELECT generate_series(max_date.anchor_date - INTERVAL 90 DAY, max_date.anchor_date, INTERVAL 1 DAY) AS date \n     FROM max_date) t\n  GROUP BY date_trunc('week', date)\n)\nSELECT \n  strftime('%Y-%m-%d', week_start) AS week_start_date,\n  COUNT(DISTINCT produc"
+    },
+    {
+      "id": 10,
+      "question": "最近90天活跃商家数按周趋势",
+      "difficulty": "medium",
+      "category": "seller",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: No function matches the given name and argument types 'date_trunc(STRING_LITERAL, TIMESTAMP[])'. You might need to add explicit type casts.\n\tCandidate functions:\n\tdate_trunc(VARCHAR, DATE) -> TIMESTAMP\n\tdate_trunc(VARCHAR, INTERVAL) -> INTERVAL\n\tdate_trunc(VARCHAR, TIMESTAMP) -> TIMESTAMP\n\tdate_trunc(VARCHAR, TIMESTAMP WITH TIME ZONE) -> TIMESTAMP WITH TIME ZONE\n\n\nLINE 6:     date_trunc('week', date) AS week_start,\n            ^",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\ndate_ranges AS (\n  SELECT \n    date_trunc('week', date) AS week_start,\n    date_trunc('week', date) + INTERVAL 6 DAY AS week_end\n  FROM \n    (SELECT generate_series(anchor_date - INTERVAL 90 DAY, anchor_date, INTERVAL 1 DAY) AS date FROM max_date)\n  GROUP BY 1\n)\nSELECT \n  strftime('%Y-%m-%d', week_start) AS week_start_date,\n  COUNT(DISTINCT seller_id) AS active_sellers\nFROM \n  date_ranges dr\nJOI"
+    },
+    {
+      "id": 11,
+      "question": "取消率按月趋势（最近6个月）",
+      "difficulty": "medium",
+      "category": "orders",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['month', 'cancellation_rate'], expected ['month', 'cancellation_rate', 'total_orders']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM orders\n),\ndate_range AS (\n    SELECT \n        strftime('%Y-%m', anchor_date - INTERVAL 5 MONTH) AS month_start,\n        strftime('%Y-%m', anchor_date) AS month_end\n    FROM max_date\n),\nmonthly_cancellations AS (\n    SELECT \n        strftime('%Y-%m', order_purchase_ts) AS month,\n        COUNT(DISTINCT CASE WHEN order_status = 'canceled' THEN order_id END) AS canceled_orders,\n        COUNT(DISTINCT order_id) AS "
+    },
+    {
+      "id": 12,
+      "question": "近60天每天新客数和老客数",
+      "difficulty": "hard",
+      "category": "customer",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['date', 'new_customers', 'returning_customers'], expected ['dt', 'new_customers', 'returning_customers']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\ncustomer_first_purchase AS (\n    SELECT \n        customer_unique_id,\n        MIN(CAST(order_purchase_ts AS DATE)) AS first_purchase_date\n    FROM vw_fact_items\n    GROUP BY customer_unique_id\n),\ndaily_stats AS (\n    SELECT \n        CAST(order_purchase_ts AS DATE) AS date,\n        customer_unique_id,\n        first_purchase_date\n    FROM vw_fact_items\n    JOIN customer_first_purchase USING (cust"
+    },
+    {
+      "id": 14,
+      "question": "最近6个月平均送达天数按月变化",
+      "difficulty": "medium",
+      "category": "delivery",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: No function matches the given name and argument types '-(STRUCT(\"CAST(max(order_purchase_ts) AS DATE)\" DATE), INTERVAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\t-(TINYINT) -> TINYINT\n\t-(TINYINT, TINYINT) -> TINYINT\n\t-(SMALLINT) -> SMALLINT\n\t-(SMALLINT, SMALLINT) -> SMALLINT\n\t-(INTEGER) -> INTEGER\n\t-(INTEGER, INTEGER) -> INTEGER\n\t-(BIGINT) -> BIGINT\n\t-(BIGINT, BIGINT) -> BIGINT\n\t-(HUGEINT) -> HUGEINT\n\t-(HUGEINT, HUGEINT) -> HUGEINT\n\t-(FLOAT) -> FLOAT\n\t-(FLOAT, FLOAT) -> FLOAT\n\t-(DOUBLE) -> DOUBLE\n\t-(DOUBLE, DOUBLE) -> DOUBLE\n\t-(DECIMAL) -> DECIMAL\n\t-(DECIMAL, DECIMAL) -> DECIMAL\n\t-(UTINYINT) -> UTINYINT\n\t-(UTINYINT, UTINYINT) -> UTINYINT\n\t-(USMALLINT) -> USMALLINT\n\t-(USMALLINT, USMALLINT) -> USMALLINT\n\t-(UINTEGER) -> UINTEGER\n\t-(UINTEGER, UINTEGER) -> UINTEGER\n\t-(UBIGINT) -> UBIGINT\n\t-(UBIGINT, UBIGINT) -> UBIGINT\n\t-(UHUGEINT) -> UHUGEINT\n\t-(UHUGEINT, UHUGEINT) -> UHUGEINT\n\t-(BIGNUM) -> BIGNUM\n\t-(BIGNUM, BIGNUM) -> BIGNUM\n\t-(DATE, DATE) -> BIGINT\n\t-(DATE, INTEGER) -> DATE\n\t-(TIMESTAMP, TIMESTAMP) -> INTERVAL\n\t-(INTERVAL, INTERVAL) -> INTERVAL\n\t-(DATE, INTERVAL) -> TIMESTAMP\n\t-(TIME, INTERVAL) -> TIME\n\t-(TIMESTAMP, INTERVAL) -> TIMESTAMP\n\t-(TIME WITH TIME ZONE, INTERVAL) -> TIME WITH TIME ZONE\n\t-(INTERVAL) -> INTERVAL\n\t-(TIMESTAMP WITH TIME ZONE, INTERVAL) -> TIMESTAMP WITH TIME ZONE\n\t-(TIMESTAMP WITH TIME ZONE, TIMESTAMP WITH TIME ZONE) -> INTERVAL\n\n\nLINE 9: ...    WHERE order_purchase_ts >= (SELECT max_date FROM max_date) - INTERVAL 6 MONTH\n                                                                          ^",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) FROM vw_delivered_orders\n),\ndate_range AS (\n    SELECT \n        strftime('%Y-%m', order_purchase_ts) AS month,\n        AVG(date_diff('day', order_purchase_ts, order_delivered_customer_ts)) AS avg_delivery_days\n    FROM vw_delivered_orders\n    WHERE order_purchase_ts >= (SELECT max_date FROM max_date) - INTERVAL 6 MONTH\n    AND order_delivered_customer_ts IS NOT NULL\n    GROUP BY 1\n)\nSELECT \n    month,\n    avg_delivery_days\nFROM d"
+    },
+    {
+      "id": 15,
+      "question": "最近6个月低评分率按月趋势",
+      "difficulty": "medium",
+      "category": "review",
+      "failure_stage": "semantic",
+      "failure_detail": "value mismatch at row 0, column month: got '2018-02', expected '2018-02-01 00:00:00'",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(review_creation_date) AS DATE) AS anchor_date FROM order_reviews\n),\nreview_months AS (\n    SELECT \n        strftime('%Y-%m', review_creation_date) AS month,\n        AVG(CASE WHEN review_score <= 2 THEN 1 ELSE 0 END) AS low_rating_rate\n    FROM order_reviews\n    WHERE review_creation_date >= (SELECT anchor_date - INTERVAL '6 MONTH' FROM max_date)\n    GROUP BY 1\n)\nSELECT \n    month,\n    low_rating_rate\nFROM review_months\nORDER BY month;"
+    },
+    {
+      "id": 16,
+      "question": "最近6个月高评分率按月趋势",
+      "difficulty": "medium",
+      "category": "review",
+      "failure_stage": "semantic",
+      "failure_detail": "value mismatch at row 0, column month: got '2018-02', expected '2018-02-01 00:00:00'",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(review_creation_date) AS DATE) AS last_review_date FROM order_reviews\n),\nreview_months AS (\n  SELECT \n    strftime('%Y-%m', review_creation_date) AS month,\n    AVG(CASE WHEN review_score >= 4 THEN 1 ELSE 0 END) AS high_rating_rate\n  FROM order_reviews\n  WHERE review_creation_date >= (SELECT last_review_date - INTERVAL 6 MONTH FROM max_date)\n  GROUP BY strftime('%Y-%m', review_creation_date)\n  ORDER BY month\n)\nSELECT month, high_rating_rate FROM review_months;"
+    },
+    {
+      "id": 17,
+      "question": "比较最近30天与前30天的GMV变化",
+      "difficulty": "medium",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "value mismatch at row 0, column period: got 'Previous 30 Days', expected 'current_30d'",
+      "sql_source": "llm",
+      "generated_sql": "WITH date_boundary AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS max_date FROM vw_fact_items\n),\nrecent_30d AS (\n    SELECT \n        'Recent 30 Days' AS period,\n        SUM(line_gmv) AS gmv\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT max_date - INTERVAL 30 DAY FROM date_boundary)\n    AND order_purchase_ts < (SELECT max_date FROM date_boundary)\n),\nprevious_30d AS (\n    SELECT \n        'Previous 30 Days' AS period,\n        SUM(line_gmv) AS gmv\n    FROM vw_fact_items\n    "
+    },
+    {
+      "id": 19,
+      "question": "近90天各支付方式 payment_type 的GMV占比",
+      "difficulty": "medium",
+      "category": "orders",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['payment_type', 'gmv_share'], expected ['payment_type', 'gmv', 'gmv_ratio']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date \n    FROM vw_fact_items\n),\npayment_gmv AS (\n    SELECT \n        op.payment_type,\n        SUM(fi.price + fi.freight_value) AS gmv\n    FROM vw_fact_items fi\n    JOIN order_payments op ON fi.order_id = op.order_id\n    WHERE fi.order_purchase_ts >= (SELECT anchor_date - INTERVAL 90 DAY FROM max_date)\n    AND fi.order_purchase_ts < (SELECT anchor_date FROM max_date)\n    GROUP BY op.payment_type\n),\ntotal_gmv AS (\n    SEL"
+    },
+    {
+      "id": 20,
+      "question": "近90天运费占比趋势（按周）",
+      "difficulty": "medium",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['week_id', 'freight_ratio'], expected ['week', 'freight_ratio']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\ndate_ranges AS (\n  SELECT \n    strftime('%Y-%W', order_purchase_ts) AS week_id,\n    MIN(order_purchase_ts) AS week_start,\n    SUM(freight_value) AS total_freight,\n    SUM(price + freight_value) AS total_gmv\n  FROM vw_fact_items\n  WHERE order_purchase_ts >= (SELECT anchor_date - INTERVAL 90 DAY FROM max_date)\n  GROUP BY 1\n)\nSELECT \n  week_id,\n  total_freight / total_gmv AS freight_ratio\nFROM date"
+    },
+    {
+      "id": 21,
+      "question": "近180天准时与延迟订单的评分分布",
+      "difficulty": "medium",
+      "category": "delivery",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: Referenced column \"review_score\" not found in FROM clause!\nCandidate bindings: \"order_delivered_customer_ts\", \"order_purchase_ts\", \"order_estimated_delivery_ts\", \"order_delivered_carrier_ts\", \"order_approved_ts\"\n\nLINE 8:         review_score\n                ^",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_delivered_orders\n),\ndelivery_period AS (\n    SELECT \n        order_id,\n        CASE WHEN order_delivered_customer_ts <= order_estimated_delivery_ts THEN 'on_time' ELSE 'late' END AS delivery_status,\n        review_score\n    FROM vw_delivered_orders\n    WHERE order_purchase_ts >= (SELECT anchor_date - INTERVAL 180 DAY FROM max_date)\n    AND order_delivered_customer_ts IS NOT NULL\n    AND order_estimated_deli"
+    },
+    {
+      "id": 22,
+      "question": "最近6个月每月D30留存率",
+      "difficulty": "hard",
+      "category": "customer",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['month', 'd30_retention_rate'], expected ['cohort_month', 'cohort_size', 'retained_d30', 'd30_retention']",
+      "sql_source": "llm",
+      "generated_sql": "WITH customer_first_purchase AS (\n    SELECT \n        customer_unique_id,\n        MIN(order_purchase_ts) AS first_order_ts,\n        strftime('%Y-%m', MIN(order_purchase_ts)) AS cohort_month\n    FROM vw_fact_items\n    GROUP BY customer_unique_id\n),\n\ncohort_users AS (\n    SELECT \n        cohort_month,\n        COUNT(DISTINCT customer_unique_id) AS cohort_users\n    FROM customer_first_purchase\n    WHERE first_order_ts >= (SELECT MAX(order_purchase_ts) FROM vw_fact_items) - INTERVAL 6 MONTH\n    GROUP"
+    },
+    {
+      "id": 23,
+      "question": "最近6个月每月D7留存率",
+      "difficulty": "hard",
+      "category": "customer",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['cohort_month', 'd7_retention_rate'], expected ['cohort_month', 'cohort_size', 'retained_d7', 'd7_retention']",
+      "sql_source": "llm",
+      "generated_sql": "WITH customer_first_orders AS (\n  SELECT \n    customer_unique_id,\n    MIN(order_purchase_ts) AS first_order_ts\n  FROM vw_fact_items\n  GROUP BY customer_unique_id\n),\n\ncohort_users AS (\n  SELECT\n    strftime('%Y-%m', first_order_ts) AS cohort_month,\n    COUNT(DISTINCT customer_unique_id) AS cohort_users\n  FROM customer_first_orders\n  WHERE first_order_ts >= (SELECT MAX(order_purchase_ts) FROM vw_fact_items) - INTERVAL 6 MONTH\n  GROUP BY 1\n),\n\nretained_users AS (\n  SELECT\n    strftime('%Y-%m', cfo."
+    },
+    {
+      "id": 24,
+      "question": "近90天每周订单数、人均订单数、人均GMV",
+      "difficulty": "medium",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['week_id', 'paid_orders', 'orders_per_buyer', 'gmv_per_buyer'], expected ['week', 'paid_orders', 'unique_buyers', 'orders_per_buyer', 'gmv_per_buyer']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\ndate_ranges AS (\n    SELECT \n        strftime('%Y-%W', order_purchase_ts) AS week_id,\n        MIN(order_purchase_ts) AS week_start,\n        COUNT(DISTINCT order_id) AS paid_orders,\n        COUNT(DISTINCT customer_unique_id) AS unique_buyers,\n        SUM(price + freight_value) AS gmv\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT anchor_date - INTERVAL 90 DAY FROM max_date)\n    G"
+    },
+    {
+      "id": 25,
+      "question": "最近3个月Top 20 SKU按GMV",
+      "difficulty": "easy",
+      "category": "seller",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['product_id', 'total_gmv'], expected ['product_id', 'gmv']",
+      "sql_source": "llm",
+      "generated_sql": "WITH recent_months AS (\n  SELECT \n    product_id,\n    strftime('%Y-%m', order_purchase_ts) AS month,\n    SUM(price + freight_value) AS gmv\n  FROM vw_fact_items\n  WHERE order_purchase_ts >= (SELECT MAX(order_purchase_ts) FROM vw_fact_items) - INTERVAL 3 MONTH\n  GROUP BY product_id, month\n),\n\ntop_skus AS (\n  SELECT \n    product_id,\n    SUM(gmv) AS total_gmv\n  FROM recent_months\n  GROUP BY product_id\n  ORDER BY total_gmv DESC\n  LIMIT 20\n)\n\nSELECT \n  product_id,\n  total_gmv\nFROM top_skus\nORDER BY to"
+    },
+    {
+      "id": 26,
+      "question": "最近3个月Top 20 卖家按GMV",
+      "difficulty": "easy",
+      "category": "seller",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['seller_id', 'seller_city', 'seller_state', 'gmv'], expected ['seller_id', 'gmv']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date \n    FROM vw_fact_items\n),\ndate_range AS (\n    SELECT \n        anchor_date - INTERVAL 3 MONTH AS start_date,\n        anchor_date AS end_date\n    FROM max_date\n)\nSELECT \n    s.seller_id,\n    s.seller_city,\n    s.seller_state,\n    SUM(fi.price + fi.freight_value) AS gmv\nFROM \n    vw_fact_items fi\nJOIN \n    sellers s ON fi.seller_id = s.seller_id\nJOIN \n    date_range dr ON fi.order_purchase_ts >= dr.start_date AND fi."
+    },
+    {
+      "id": 27,
+      "question": "今年以来每月新客订单占比",
+      "difficulty": "hard",
+      "category": "customer",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['month', 'new_customer_order_share'], expected ['month', 'paid_orders', 'new_customer_orders', 'new_customer_order_ratio']",
+      "sql_source": "llm",
+      "generated_sql": "WITH monthly_orders AS (\n    SELECT \n        strftime('%Y-%m', o.order_purchase_ts) AS month,\n        COUNT(DISTINCT o.order_id) AS paid_orders,\n        COUNT(DISTINCT CASE WHEN o.order_purchase_ts = first_purchase.first_purchase_ts THEN o.customer_id END) AS new_customer_orders\n    FROM vw_eligible_orders o\n    JOIN (\n        SELECT \n            customer_id, \n            MIN(order_purchase_ts) AS first_purchase_ts\n        FROM vw_eligible_orders\n        GROUP BY customer_id\n    ) first_purchase"
+    },
+    {
+      "id": 28,
+      "question": "最近90天各州准时送达率",
+      "difficulty": "medium",
+      "category": "delivery",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['customer_state', 'on_time_delivery_rate'], expected ['customer_state', 'on_time_rate', 'delivered_orders']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) - INTERVAL 90 DAY AS cutoff_date\n    FROM vw_delivered_orders\n)\n\nSELECT \n    c.customer_state,\n    AVG(CASE WHEN o.order_delivered_customer_ts <= o.order_estimated_delivery_ts THEN 1 ELSE 0 END) AS on_time_delivery_rate\nFROM \n    vw_delivered_orders o\nJOIN \n    customers c ON o.customer_id = c.customer_id\nWHERE \n    o.order_purchase_ts >= (SELECT cutoff_date FROM max_date)\nGROUP BY \n    c.customer_state\nORDER BY \n    on_time_deli"
+    },
+    {
+      "id": 30,
+      "question": "最近180天评价均分按月趋势",
+      "difficulty": "easy",
+      "category": "review",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['month', 'average_review_score'], expected ['month', 'avg_score']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(review_creation_date) AS DATE) AS anchor_date FROM order_reviews\n),\ndate_range AS (\n  SELECT \n    strftime('%Y-%m', review_creation_date) AS month,\n    AVG(review_score) AS average_review_score\n  FROM order_reviews\n  WHERE review_creation_date >= (SELECT anchor_date - INTERVAL 180 DAY FROM max_date)\n  GROUP BY strftime('%Y-%m', review_creation_date)\n  ORDER BY month\n)\nSELECT month, average_review_score FROM date_range;"
+    },
+    {
+      "id": 31,
+      "question": "分期订单占比按月趋势（最近6个月）",
+      "difficulty": "medium",
+      "category": "orders",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['month', 'installment_order_share'], expected ['month', 'paid_orders', 'installment_orders', 'installment_ratio']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_eligible_orders\n),\ndate_range AS (\n    SELECT \n        strftime('%Y-%m', order_purchase_ts) AS month,\n        COUNT(DISTINCT o.order_id) AS paid_orders,\n        COUNT(DISTINCT CASE WHEN p.payment_installments > 1 THEN o.order_id END) AS installments_orders\n    FROM vw_eligible_orders o\n    JOIN order_payments p ON o.order_id = p.order_id\n    WHERE order_purchase_ts >= (SELECT anchor_date - INTERVAL '6 MONTH"
+    },
+    {
+      "id": 32,
+      "question": "最近90天每周的平均支付金额",
+      "difficulty": "easy",
+      "category": "orders",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: Ambiguous reference to column name \"order_purchase_ts\" (use: \"f.order_purchase_ts\" or \"o.order_purchase_ts\")",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\ndate_ranges AS (\n    SELECT \n        date_trunc('week', order_purchase_ts) AS week_start,\n        SUM(payment_value) AS total_payment_value,\n        COUNT(DISTINCT o.order_id) AS order_count\n    FROM vw_fact_items f\n    JOIN order_payments p ON f.order_id = p.order_id\n    JOIN orders o ON f.order_id = o.order_id\n    WHERE order_purchase_ts >= (SELECT anchor_date - INTERVAL 90 DAY FROM max_date"
+    },
+    {
+      "id": 33,
+      "question": "过去一年GMV趋势变化，按月展示",
+      "difficulty": "easy",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "value mismatch at row 0, column month: got '2017-09', expected '2017-09-01 00:00:00'",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS last_date FROM vw_fact_items\n),\ndate_range AS (\n    SELECT \n        strftime('%Y-%m', order_purchase_ts) AS month,\n        SUM(price + freight_value) AS gmv\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT last_date - INTERVAL 1 YEAR FROM max_date)\n    GROUP BY 1\n    ORDER BY 1\n)\nSELECT month, gmv FROM date_range;"
+    },
+    {
+      "id": 34,
+      "question": "近30天复购率是多少",
+      "difficulty": "hard",
+      "category": "customer",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['repeat_purchase_rate'], expected ['unique_buyers', 'repeat_buyers', 'repeat_purchase_rate']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM vw_fact_items\n),\ndate_range AS (\n    SELECT \n        anchor_date - INTERVAL 30 DAY AS start_date,\n        anchor_date AS end_date\n    FROM max_date\n),\ncustomer_first_purchase AS (\n    SELECT \n        customer_unique_id,\n        MIN(CAST(order_purchase_ts AS DATE)) AS first_purchase_date\n    FROM vw_fact_items\n    GROUP BY customer_unique_id\n),\nperiod_buyers AS (\n    SELECT DISTINCT \n        customer_unique_id\n"
+    },
+    {
+      "id": 35,
+      "question": "最近90天GMV同比去年同期变化",
+      "difficulty": "hard",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "value mismatch at row 1, column period: got 'previous', expected 'same_period_last_year'",
+      "sql_source": "llm",
+      "generated_sql": "WITH current_period AS (\n    SELECT \n        SUM(line_gmv) AS gmv,\n        'current' AS period\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT CAST(MAX(order_purchase_ts) AS DATE) - INTERVAL 90 DAY FROM vw_fact_items)\n      AND order_purchase_ts < (SELECT CAST(MAX(order_purchase_ts) AS DATE) FROM vw_fact_items)\n),\n\nprevious_period AS (\n    SELECT \n        SUM(line_gmv) AS gmv,\n        'previous' AS period\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT CAST(MAX(order_"
+    },
+    {
+      "id": 36,
+      "question": "各品类（product_category_name）近90天GMV Top 10",
+      "difficulty": "medium",
+      "category": "seller",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: Referenced column \"product_category_name\" not found in FROM clause!\nCandidate bindings: \"product_id\", \"order_purchase_ts\", \"price\", \"customer_city\", \"customer_state\"\n\nLINE 12:     GROUP BY product_category_name\n                      ^",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date \n    FROM vw_fact_items\n),\nrecent_90_days AS (\n    SELECT \n        product_category_name,\n        SUM(line_gmv) AS gmv\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT anchor_date - INTERVAL 90 DAY FROM max_date)\n    AND order_purchase_ts < (SELECT anchor_date FROM max_date)\n    GROUP BY product_category_name\n)\nSELECT \n    product_category_name,\n    gmv\nFROM recent_90_days\nWHERE product_category_name I"
+    },
+    {
+      "id": 37,
+      "question": "最近6个月每月新增买家数",
+      "difficulty": "medium",
+      "category": "customer",
+      "failure_stage": "execution",
+      "failure_detail": "Binder Error: Referenced column \"anchor_date\" was not found because the FROM clause is missing\n\nLINE 6:         strftime('%Y-%m', anchor_date - INTERVAL 5 MONTH) AS month_start,\n                                  ^",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n    SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_date FROM orders\n),\ndate_ranges AS (\n    SELECT \n        strftime('%Y-%m', anchor_date - INTERVAL 5 MONTH) AS month_start,\n        strftime('%Y-%m', anchor_date) AS month_end\n),\nfirst_purchases AS (\n    SELECT \n        customer_unique_id,\n        MIN(strftime('%Y-%m', order_purchase_ts)) AS first_purchase_month\n    FROM vw_fact_items\n    GROUP BY customer_unique_id\n)\nSELECT \n    strftime('%Y-%m', order_purchase_ts) AS m"
+    },
+    {
+      "id": 39,
+      "question": "今天的GMV是多少",
+      "difficulty": "easy",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "column mismatch: got ['gmv'], expected ['gmv', 'paid_orders']",
+      "sql_source": "llm",
+      "generated_sql": "WITH max_date AS (\n  SELECT CAST(MAX(order_purchase_ts) AS DATE) AS latest_date FROM vw_fact_items\n)\nSELECT SUM(line_gmv) AS gmv\nFROM vw_fact_items\nWHERE CAST(order_purchase_ts AS DATE) = (SELECT latest_date FROM max_date);"
+    },
+    {
+      "id": 40,
+      "question": "最近7天与上周同期GMV对比",
+      "difficulty": "medium",
+      "category": "gmv",
+      "failure_stage": "semantic",
+      "failure_detail": "value mismatch at row 0, column period: got 'current', expected 'current_7d'",
+      "sql_source": "llm",
+      "generated_sql": "WITH current_period AS (\n    SELECT \n        'current' AS period,\n        SUM(line_gmv) AS gmv\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT CAST(MAX(order_purchase_ts) AS DATE) - INTERVAL 7 DAY FROM vw_fact_items)\n    AND order_purchase_ts < (SELECT CAST(MAX(order_purchase_ts) AS DATE) FROM vw_fact_items)\n),\n\nprevious_period AS (\n    SELECT \n        'previous' AS period,\n        SUM(line_gmv) AS gmv\n    FROM vw_fact_items\n    WHERE order_purchase_ts >= (SELECT CAST(MAX(order_pur"
+    }
+  ]
+}

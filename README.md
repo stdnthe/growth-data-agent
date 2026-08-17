@@ -1,99 +1,136 @@
-# 电商增长数据分析助手
+# Olist Growth Copilot
 
-> 一个可在本地运行的电商增长分析助手：用中文提问，自动生成 SQL、查询数据库、展示图表与结论。
+> 一个面向电商增长分析的可信 Data Agent：把自然语言问题转化为可审计的分析运行，并通过指标语义、确定性校验、Golden Set 与可选 LangSmith Trace 建立“验算闭环”。
 
-**技术栈**：Streamlit · DuckDB · DeepSeek / OpenAI · Python 3.11
+**技术栈**：Streamlit · DuckDB · DeepSeek / OpenAI · Python 3.11 · LangSmith（可选）
 
----
+[GitHub 仓库](https://github.com/stdnthe/growth-data-agent) · [90 秒演示脚本](docs/portfolio_demo.md) · [评测方法](docs/eval_methodology.md) · [最新评测快照](eval/results/README.md)
 
-## 它能做什么？
+![Growth Copilot：问数、归因与主动澄清 Demo](assets/demo/growth-copilot-demo.gif)
 
-你在网页输入一个中文问题，助手完成以下全部步骤：
+## 30 秒了解项目
+
+| 面试官关心的问题 | 本项目给出的证据 |
+| --- | --- |
+| 不只是 NL2SQL 吗？ | 结构化意图、Workflow 路由、指标语义、结果校验与统一 `AnalysisRun` |
+| 如何保证可信？ | 只读 SQL Guard、确定性 GMV 分解、比例/粒度/窗口/可加和校验 |
+| 如何衡量效果？ | 40 道 SQL/结果 Golden Case、8 道意图 Case、端到端统一分母与 Bad Case |
+| 如何持续迭代？ | 运行 Trace、失败阶段、用户反馈，经人工审核后进入 Golden Dataset |
+| 产品边界是什么？ | 自动归因聚焦 GMV；缺少曝光、点击和广告成本时拒绝伪精确结论 |
+
+## 产品定位
+
+普通 NL2SQL Demo 通常只回答“SQL 能不能跑”。Growth Copilot 进一步记录和验证：
 
 ```text
-你的问题（中文）
-    ↓
-LLM 翻译成 SQL（DeepSeek 或 OpenAI）
-    ↓
-SQL 安全检查（只读、白名单、自动加 LIMIT）
-    ↓
-查询本地 DuckDB 数据库
-    ↓
-展示表格 + 图表 + 一句话摘要 + GMV 归因分析
+用户问题
+  ↓
+结构化意图：任务、指标、时间、粒度、维度、歧义
+  ↓
+Workflow 路由：指标查询 / 确定性 GMV 归因
+  ↓
+指标语义 + SQL Guard + DuckDB 执行
+  ↓
+结果与归因校验
+  ↓
+洞察、假设、限制、运行元数据
+  ↓
+用户反馈 → 失败样本 → Golden Dataset → 回归评测
 ```
 
-示例问题：
+产品采用一个克制的边界：高频、路径明确的问题优先走可评估的 Workflow；开放式 Agent Loop 暂不承担缺少验算标准的任务。
 
-- 近 30 天 GMV 走势（按天）
-- 上个月订单数、GMV、客单价分别是多少？
-- 按州看 GMV Top 10（近 90 天）
-- 准时送达率按月趋势（最近 6 个月）
-- 延迟送达订单平均评分 vs 准时订单平均评分
-- 新客占比按月趋势（今年以来）
+## 当前能力
 
----
+| 能力 | 当前实现 |
+| --- | --- |
+| 结构化意图 | 识别任务、一个或多个指标、时间范围、比较口径、粒度、维度、歧义与置信度 |
+| Human-in-the-loop | 模糊指标请求主动澄清；超出当前归因边界时先确认 |
+| 统一 AnalysisRun | 每次运行记录 `run_id`、Workflow、SQL、验证、版本、延迟、失败阶段与反馈 |
+| Text-to-SQL | DeepSeek / OpenAI-compatible API；无 Key 时使用有限规则 fallback |
+| SQL Guardrail | 只读、单语句、危险关键字拦截、表白名单、自动 LIMIT |
+| 指标语义层 | `metrics.yml` 定义 28 个增长、订单、用户、履约和评价指标 |
+| GMV 确定性归因 | `GMV = Orders × AOV`，并按州、品类、商家下钻贡献 |
+| 结果验算器 | 非空、请求指标、有限数值、比例范围、时间粒度、归因可加和、窗口互斥 |
+| 有限纠错 | LLM SQL 被 Guard、执行或结果校验拒绝时，最多携带确定性错误重试一次 |
+| 可观测性 | 可选 LangSmith Trace；缺依赖、缺 Key 或发送失败均不阻塞主分析 |
+| 反馈闭环 | UI 收集有用性与失败类型，本地写入 `.runtime/feedback.jsonl` |
+| Eval v2 | 40 道 Golden SQL 全结果等价评测 + 8 道结构化意图评测 + 端到端统一分母 |
 
-## 核心功能
+## 可信分析界面
 
-| 功能 | 说明 |
-|------|------|
-| 中文自然语言查询 | 直接输入中文问题，LLM 自动生成对应 SQL |
-| 双 LLM 支持 | 默认使用 DeepSeek V3（deepseek-chat），可切换至 OpenAI |
-| 无 Key 降级 | 未配置 API Key 时自动走内置规则 fallback，不报错 |
-| SQL 安全防护 | 只允许 SELECT/WITH，禁止写操作，表名白名单，自动补 LIMIT |
-| 指标语义约束 | 28 个业务指标定义注入 LLM Prompt，保证口径一致（如 GMV 不含取消订单） |
-| 可视化图表 | 支持折线/柱状/面积/散点图，自动识别时间轴 |
-| GMV 归因分析 | 自动对比当期 vs 前期，拆解订单量效应/AOV 效应，按州/品类/商家定位贡献 |
-| 评测脚本 | 内置 eval 脚本，输出 SQL 生成成功率、Guard 通过率、执行成功率 |
+每次回答由以下区域构成：
 
----
+1. **分析计划与口径**：系统理解的任务、指标、时间范围、Workflow、假设。
+2. **数据与洞察**：SQL、查询结果、图表或 GMV 贡献拆解。
+3. **确定性校验**：逐项显示通过或失败，不展示模型隐藏思维链。
+4. **运行元数据**：模型、Prompt/指标版本、延迟、重试、Trace 状态。
+5. **用户反馈**：将负反馈沉淀为后续 Golden Set 候选。
 
-## 项目结构
+推荐演示问题：
+
+- `近30天GMV走势（按天）`：正常指标查询与结果校验。
+- `为什么最近GMV下降？`：默认最近 30 天，执行确定性归因。
+- `最近销售表现怎么样？`：缺少指标，主动澄清。
+- `为什么准时送达率下降？`：提示当前自动归因只支持 GMV，并请求确认。
+
+完整讲解顺序和每一步的面试要点见 [90 秒演示脚本](docs/portfolio_demo.md)。
+
+## 架构
+
+```mermaid
+flowchart TD
+    U["User Question"] --> I["Structured Intent"]
+    I -->|clarify / confirm| H["Human-in-the-loop"]
+    I -->|metric query| R["Retrieval Workflow"]
+    I -->|GMV diagnosis| A["GMV Attribution Workflow"]
+    R --> C["Metric Context"]
+    C --> L["LLM SQL Generation"]
+    L --> G["SQL Guard"]
+    G --> D["DuckDB"]
+    D --> V["Deterministic Validators"]
+    A --> V
+    V --> S["Insight + Caveats"]
+    S --> F["User Feedback"]
+    F --> E["Golden Dataset / Eval"]
+    I -.-> T["Optional LangSmith Trace"]
+    L -.-> T
+    G -.-> T
+    D -.-> T
+    V -.-> T
+```
+
+核心模块：
 
 ```text
 growth-analysis-agent/
-├── app.py                        # 网页入口（Streamlit），串联所有模块
-├── requirements.txt
-├── README.md
-│
-├── agent/                        # 核心 Agent 逻辑
-│   ├── llm_sql.py                # 中文问题 → SQL（LLM 调用 + fallback 规则）
-│   ├── sql_guard.py              # SQL 安全检查（只读白名单，自动补 LIMIT）
-│   ├── metrics_store.py          # 读取指标词典，压缩成 LLM Prompt
-│   ├── insight.py                # 查询结果 → 一句话摘要
-│   └── attribution.py            # GMV 异动归因分析
-│
-├── metrics/
-│   └── metrics.yml               # 28 个业务指标定义（中文名/公式/SQL 提示）
-│
-├── warehouse/
-│   ├── load_olist_to_duckdb.py   # 一次性：CSV → DuckDB 数据库初始化
-│   └── views.sql                 # 3 个预处理视图定义
-│
+├── app.py                         # Streamlit 产品界面，仅负责配置与展示
+├── agent/
+│   ├── models.py                  # AnalysisIntent / AnalysisRun / ValidationResult
+│   ├── pipeline.py                # 统一分析编排入口 execute_analysis()
+│   ├── intent_router.py           # 结构化意图、澄清与 Workflow 路由
+│   ├── validators.py              # 查询结果和 GMV 归因确定性校验
+│   ├── observability.py           # 可选 LangSmith adapter
+│   ├── feedback.py                # 本地 JSONL 反馈存储
+│   ├── llm_sql.py                 # Text-to-SQL 与有限重试反馈
+│   ├── sql_guard.py               # SQL 安全校验
+│   ├── metrics_store.py           # 指标语义读取与版本
+│   ├── attribution.py             # GMV 确定性归因
+│   └── insight.py                 # 查询结果摘要
+├── metrics/metrics.yml            # 28 个指标定义
 ├── eval/
-│   ├── questions.jsonl            # 评测问题集
-│   └── run_eval.py               # 评测脚本
-│
-└── scripts/
-    ├── set_deepseek_keychain.sh       # 把 DeepSeek API Key 写入 macOS Keychain
-    └── delete_deepseek_keychain.sh
+│   ├── questions.jsonl            # 40 道 Golden SQL
+│   ├── intent_cases.jsonl          # 8 道意图/澄清 Golden Case
+│   ├── run_eval.py                # SQL、结果、合规、E2E 评测
+│   ├── run_intent_eval.py         # 路由与澄清评测
+│   └── langsmith_experiment.py    # 可选 Dataset 上传与 Experiment
+├── tests/                          # 无网络单元/集成测试
+└── warehouse/                     # Olist → DuckDB 与分析视图
 ```
-
-### 数据库视图说明
-
-`load_olist_to_duckdb.py` 初始化时会基于原始 CSV 自动创建以下视图，查询时应优先使用它们：
-
-| 视图 | 含义 |
-|------|------|
-| `vw_eligible_orders` | 有效订单（delivered / shipped / approved / invoiced） |
-| `vw_fact_items` | 完整商品明细，含用户、州、GMV、运费等字段 |
-| `vw_delivered_orders` | 已妥投订单，用于履约/配送分析 |
-
----
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 安装
 
 ```bash
 python3 -m venv .venv
@@ -101,189 +138,177 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. 准备原始数据
+### 2. 准备数据
 
-将以下 Olist CSV 文件放入项目根目录的 `olist_data/` 文件夹：
-
-```text
-olist_data/
-├── olist_orders_dataset.csv
-├── olist_customers_dataset.csv
-├── olist_order_items_dataset.csv
-├── olist_order_payments_dataset.csv
-├── olist_order_reviews_dataset.csv
-├── olist_products_dataset.csv
-├── olist_sellers_dataset.csv
-└── olist_geolocation_dataset.csv
-```
-
-> 数据来源：[Kaggle - Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
-
-### 3. 初始化数据库（只需运行一次）
+仓库 Demo 使用 Olist 数据。若本地没有 `olist.duckdb`，把原始 CSV 放入 `olist_data/` 后运行：
 
 ```bash
 python warehouse/load_olist_to_duckdb.py
 ```
 
-执行后在项目根目录生成 `olist.duckdb`，并自动创建 3 个分析视图。
+生成的核心视图：
 
-### 4. 配置 API Key
+| 视图 | 用途 |
+| --- | --- |
+| `vw_eligible_orders` | 有效支付类订单 |
+| `vw_fact_items` | GMV、用户、州、商品、商家明细 |
+| `vw_delivered_orders` | 履约与配送分析 |
 
-#### 方式 A：`.env` 文件（简单）
-
-复制 `.env.example` 为 `.env`，填入你的 API Key：
+### 3. 配置模型
 
 ```bash
-# DeepSeek（默认）
+cp .env.example .env
+```
+
+默认 DeepSeek：
+
+```dotenv
 LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=你的key
+DEEPSEEK_API_KEY=your-key
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-
-# 或切换到 OpenAI
-# LLM_PROVIDER=openai
-# OPENAI_API_KEY=你的key
-# OPENAI_MODEL=gpt-4o-mini
 ```
 
-#### 方式 B：macOS Keychain（推荐，Key 不落盘）
+也可以使用 OpenAI-compatible 配置。未配置 Key 时，应用仍可运行内置的少量高频 fallback；fallback 只是产品降级路径，不代表完整模型能力。
 
-```bash
-./scripts/set_deepseek_keychain.sh
-# 按提示输入 DeepSeek API Key（不会回显）
-```
-
-应用启动时会自动从 Keychain 读取，无需写入任何文件。
-
-> 若两种方式都未配置，应用会自动降级到内置规则 fallback，仍可正常使用示例问题。
-
-### 5. 启动应用
+### 4. 启动
 
 ```bash
 streamlit run app.py
 ```
 
-浏览器访问 `http://localhost:8501`，即可开始提问。
+## LangSmith Trace（可选）
 
----
-
-## AI Evals 评测体系
-
-本项目通过 AI Evals 驱动产品质量持续改进，评测脚本覆盖三个层次：
-
-| 层次 | 评测内容 |
-| ---- | -------- |
-| Layer 1 管道健康度 | SQL 生成成功率 → Guard 通过率 → 执行成功率 |
-| Layer 2 语义正确性 | 与 golden SQL 结果对比（行数 / 数值近似） |
-| Layer 3 指标合规性 | 静态检查 SQL 是否引用了正确的表和关键模式 |
-
-评测集共 **40 道题**，覆盖 5 个业务类别（GMV / 订单 / 履约 / 评价 / 用户），按 easy / medium / hard 三档难度分层。
-
-### 运行评测
+主应用不依赖 LangSmith。需要 Trace 时安装：
 
 ```bash
-PYTHONPATH=. python eval/run_eval.py
+pip install -r requirements-observability.txt
 ```
 
-### 最新评测结果（DeepSeek V3 via 硅基流动）
+配置：
 
-| 指标 | 结果 |
-| ---- | ---- |
-| SQL 生成成功率 | **100%** |
-| Guard 通过率 | **95%** |
-| 执行成功率 | **85%** |
-| 语义正确率 | **94.12%** |
-| 指标合规率 | **100%** |
-
-按难度分布：
-
-| 难度 | 执行成功率 | 语义正确率 |
-| ---- | --------- | --------- |
-| Easy（14 题） | 78.57% | 90.91% |
-| Medium（19 题） | 84.21% | 93.75% |
-| Hard（7 题） | 100% | 100% |
-
-### Evals 驱动改进记录
-
-通过两轮 Eval → 分析失败 → 修复 Prompt 的迭代，语义正确率从 **87.5% → 94.12%**：
-
-**第一轮发现的问题及修复：**
-
-| 根因 | 影响题目 | 修复方式 |
-| ---- | -------- | -------- |
-| LLM 使用 `DATE_SUB()` 等 MySQL 语法 | 多题执行失败 | Prompt 规则：禁止 `DATE_SUB/DATE_ADD`，仅用 `INTERVAL` |
-| LLM 生成 SQL 注释被 Guard 拦截 | D7/D30 留存率 | Prompt 规则：禁止输出 `--` 或 `/* */` 注释 |
-| `order_reviews` 表不含 `order_purchase_ts` | 评分趋势类问题 | Prompt 规则：review 查询用 `review_creation_date` 锚定 |
-| 对比类问题输出宽表而非逐行 | 环比/同比问题 | Prompt 规则：强制使用 `UNION ALL` 格式 |
-| 使用 `DATE_FORMAT()` 函数 | 新增买家数 | Prompt 规则：改用 `strftime('%Y-%m', col)` |
-
-输出报告结构：
-
----
-
-## Statsig + LLM Agent 示例
-
-仓库里补了一份面向 Agent 场景的 Statsig 接入示例，适合参考下面几类能力怎么接：
-
-- `feature gate` 控制 Agent 是否灰度放量
-- `dynamic config` 控制模型、工具开关、最大步数
-- `prompt` 作为运行时控制面
-- `event` 记录时延、采纳率、运行结果
-- `online eval` 回传线上评分
-
-可直接查看：
-
-- [docs/statsig_llm_agent.md](docs/statsig_llm_agent.md)
-- [examples/statsig_agent_example.py](examples/statsig_agent_example.py)
-
-这个示例默认不影响当前应用运行，也没有把 Statsig 依赖强行塞进主流程依赖里；如果你要单独跑它，再安装：
-
-```bash
-pip install statsig-python-core statsig-ai openai
+```dotenv
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-langsmith-key
+LANGSMITH_PROJECT=growth-analysis-agent
 ```
 
-```json
-{
-  "summary": { "semantic_pass_rate_pct": 94.12, "compliance_pass_rate_pct": 100.0, "..." : "..." },
-  "by_difficulty": { "easy": {}, "medium": {}, "hard": {} },
-  "by_category": { "gmv": {}, "delivery": {}, "customer": {}, "..." : {} },
-  "failures": [ { "id": 5, "failure_stage": "semantic", "failure_detail": "..." } ]
-}
-```
-
----
-
-## 架构说明
-
-### LLM 调用链路
+Trace 树按业务步骤组织，而不只是记录单次模型调用：
 
 ```text
-用户问题
-    ↓
-metrics_store.py 加载指标词典（注入 Prompt，约束 GMV/复购率等口径）
-    ↓
-llm_sql.py 调用 DeepSeek/OpenAI API → 生成 SQL
-    ↓（若 API 不可用）
-内置 fallback 规则（覆盖 6 类高频问题）
-    ↓
-_anchor_relative_date()：将 current_date 替换为数据集内最新日期，避免查询超出数据范围
+growth_analysis_run
+├── parse_intent
+├── calculate_gmv_attribution        # 归因路径
+│   ├── validate_attribution
+│   └── generate_attribution_insight
+└── generate_sql                     # 查询路径
+    ├── validate_sql
+    ├── execute_duckdb
+    ├── validate_result
+    └── generate_insight
 ```
 
-### SQL 安全防护（SQLGuard）
+每条 Trace 附带 Workflow、模型、Prompt 版本、指标版本、尝试次数、延迟、校验和失败阶段。Trace 发送异常被隔离，不会影响用户查询。
 
-每条 SQL 在执行前必须通过以下检查：
+## AI Evals v2
 
-- 只允许 `SELECT` / `WITH` 语句开头
-- 禁止 `INSERT / UPDATE / DELETE / DROP / ALTER / CREATE` 等写操作关键字
-- 禁止 SQL 注释（`--` / `/* */`）
-- 只允许访问白名单内的表/视图
-- 若缺少 `LIMIT`，自动追加默认值（可在侧边栏调整）
+本项目只引用带日期、模型和分母的评测快照。最新可公开结果及原始 JSON 见 [`eval/results/`](eval/results/README.md)；历史条件化指标不作为当前端到端质量结论。
 
-### 指标语义层（metrics.yml）
+### 评测原则
 
-`metrics/metrics.yml` 定义了 28 个业务指标的中文名、计算公式和 SQL 提示，在每次 LLM 调用时作为 System Prompt 注入，确保：
+| 层次 | 评测对象 |
+| --- | --- |
+| Intent | 指标、Workflow、时间、维度、粒度、是否应该澄清 |
+| Pipeline | 生成、Guard、执行是否成功 |
+| Result | 列集合、行集合、每个数值、分组键、排序/Top N、时间结果 |
+| Compliance | 是否使用正确表、字段与指标关键模式 |
+| End-to-end | 以全部题目为统一分母；执行失败同样计为语义失败 |
 
-- GMV 不计算 `canceled` / `unavailable` 订单
-- 客单价分母必须是 `DISTINCT order_id`
-- 新老客拆分口径统一
-- 复购率等复杂指标按正确逻辑生成 SQL
+旧版 `row_count_gte_1` 只能证明“查询不为空”。Eval v2 的 40 道题已改为完整结果等价或严格行数 + 结果等价检查。
+
+### 无网络验证
+
+```bash
+PYTHONPATH=. python -m unittest discover -s tests -v
+PYTHONPATH=. python eval/run_intent_eval.py
+PYTHONPATH=. python eval/run_eval.py --output .runtime/fallback-eval.json
+```
+
+最后一条使用有限 fallback，主要验证评测管道本身；它不是 LLM 质量报告。
+
+### 真实模型评测
+
+```bash
+PYTHONPATH=. python eval/run_eval.py --use-llm --output .runtime/model-eval.json
+```
+
+输出同时包含：
+
+- SQL 生成、Guard、执行成功率
+- 以 40 道 Golden Case 为分母的结果正确率
+- 指标合规率
+- 端到端任务成功率
+- 按难度和业务类别拆分的失败清单
+- `sql_source_counts`，用于确认本次结果来自真实 LLM 还是 fallback
+
+仓库历史版本报告过一组条件化语义正确率；由于旧指标只在成功执行的样本上计算，不能与当前端到端口径直接比较。新版本需要用当前模型重新跑 Experiment 后再对外引用数字。
+
+## LangSmith Dataset 与 Experiment（可选）
+
+先预览将上传的数据：
+
+```bash
+PYTHONPATH=. python eval/langsmith_experiment.py --preview
+```
+
+上传 40 道 Golden Case：
+
+```bash
+PYTHONPATH=. python eval/langsmith_experiment.py --upload-dataset
+```
+
+运行离线 Experiment：
+
+```bash
+PYTHONPATH=. python eval/langsmith_experiment.py \
+  --run-experiment \
+  --experiment-prefix growth-agent-v2
+```
+
+内置三类 LangSmith Evaluator：
+
+- `result_correctness`：本地执行 Golden SQL，比较完整结果。
+- `metric_compliance`：检查正确表与关键指标模式。
+- `pipeline_success`：检查 AnalysisRun 和确定性校验是否成功。
+
+## 反馈闭环
+
+应用把反馈写入 `.runtime/feedback.jsonl`：
+
+```text
+run_id + 问题 + Workflow + 有用性 + 失败类型 + 用户说明
+```
+
+建议人工审核负反馈后再加入 Golden Dataset，避免把误操作或无效反馈直接当成标准答案。
+
+## Statsig 的边界
+
+仓库保留一个独立 Statsig 示例：
+
+- [接入说明](docs/statsig_llm_agent.md)
+- [Python 示例](examples/statsig_agent_example.py)
+
+当前分工：
+
+- **LangSmith**：Trace、失败诊断、Dataset、离线 Experiment。
+- **Statsig**：未来存在两个可灰度版本时，用于 Feature Gate、实验分流和产品采用率。
+
+Statsig 暂未接入主 Pipeline，避免在没有真实分流需求时重复建设观测链路。
+
+## 当前边界
+
+- 确定性自动归因目前只支持 GMV。
+- 结构化意图当前采用可测试规则；后续可在保留规则兜底的前提下加入模型解析。
+- LangSmith Cloud Experiment 需要用户自行配置账号与 API Key，本地不会自动上传数据。
+- 尚未实现角色级行列权限、PII 脱敏、开放式多轮 Agent Loop、因果推断和通用 Dashboard。
+- LLM 输出叙事不能自证正确；关键数字和归因必须先通过代码校验。

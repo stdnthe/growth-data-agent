@@ -1,35 +1,29 @@
-"""
-三层 Eval 框架：
-  Layer 1 - 管道健康度：SQL 生成 → Guard 通过 → 执行成功
-  Layer 2 - 语义正确性：与 golden_sql 结果对比（行数 / 数值近似）
-  Layer 3 - 指标合规性：静态分析 SQL 是否引用了正确的表和关键模式
-"""
+"""Offline evaluation for Text-to-SQL correctness and end-to-end task success."""
+
 from __future__ import annotations
 
+import argparse
 import json
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 from dotenv import load_dotenv
 
-from agent.llm_sql import generate_sql
+from agent.llm_sql import generate_sql, resolve_llm_config
 from agent.metrics_store import MetricsStore
 from agent.sql_guard import SQLGuard, SQLGuardError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-QUESTIONS_PATH = PROJECT_ROOT / "eval" / "questions.jsonl"
+DEFAULT_QUESTIONS_PATH = PROJECT_ROOT / "eval" / "questions.jsonl"
 METRICS_PATH = PROJECT_ROOT / "metrics" / "metrics.yml"
 DB_PATH = PROJECT_ROOT / "olist.duckdb"
+NUMERIC_TOLERANCE = 0.05
 
-NUMERIC_TOLERANCE = 0.05  # 数值对比允许 5% 误差
-
-
-# ---------------------------------------------------------------------------
-# 数据结构
-# ---------------------------------------------------------------------------
 
 @dataclass
 class QuestionResult:
@@ -37,281 +31,306 @@ class QuestionResult:
     question: str
     difficulty: str
     category: str
-    # Layer 1
     generation_success: bool = False
     guard_pass: bool = False
     execution_success: bool = False
-    # Layer 2
     has_golden: bool = False
-    semantic_pass: bool | None = None  # None = 未检查
-    # Layer 3
+    semantic_pass: bool | None = None
     has_compliance: bool = False
-    compliance_pass: bool | None = None  # None = 未检查
-    # 调试信息
+    compliance_pass: bool | None = None
     generated_sql: str = ""
+    sql_source: str = ""
     failure_stage: str = ""
     failure_detail: str = ""
 
+    @property
+    def end_to_end_pass(self) -> bool:
+        semantic_ok = self.semantic_pass is True if self.has_golden else True
+        compliance_ok = self.compliance_pass is True if self.has_compliance else True
+        return all(
+            (
+                self.generation_success,
+                self.guard_pass,
+                self.execution_success,
+                semantic_ok,
+                compliance_ok,
+            )
+        )
 
-# ---------------------------------------------------------------------------
-# Layer 2：语义正确性对比
-# ---------------------------------------------------------------------------
 
-def _check_semantic(
+def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
+    normalized = df.copy()
+    normalized.columns = [str(col).strip().lower() for col in normalized.columns]
+    for col in normalized.columns:
+        if pd.api.types.is_datetime64_any_dtype(normalized[col]):
+            normalized[col] = pd.to_datetime(normalized[col]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    if not normalized.empty:
+        sort_keys = list(normalized.columns)
+        try:
+            normalized = normalized.sort_values(sort_keys, kind="stable", na_position="last")
+        except TypeError:
+            normalized = normalized.astype(str).sort_values(sort_keys, kind="stable", na_position="last")
+    return normalized.reset_index(drop=True)
+
+
+def _compare_full_result(golden_df: pd.DataFrame, result_df: pd.DataFrame) -> tuple[bool, str]:
+    if result_df.empty and not golden_df.empty:
+        return False, "result is empty"
+
+    golden = _normalize_frame(golden_df)
+    result = _normalize_frame(result_df)
+
+    if list(result.columns) != list(golden.columns):
+        return False, f"column mismatch: got {list(result.columns)}, expected {list(golden.columns)}"
+    if len(result) != len(golden):
+        return False, f"row count mismatch: got {len(result)}, expected {len(golden)}"
+
+    for col in golden.columns:
+        golden_series = golden[col]
+        result_series = result[col]
+        if pd.api.types.is_numeric_dtype(golden_series) and pd.api.types.is_numeric_dtype(result_series):
+            left = pd.to_numeric(golden_series, errors="coerce")
+            right = pd.to_numeric(result_series, errors="coerce")
+            both_na = left.isna() & right.isna()
+            denominator = left.abs().clip(lower=1e-9)
+            relative_diff = (right - left).abs() / denominator
+            matches = both_na | (relative_diff <= NUMERIC_TOLERANCE) | ((right - left).abs() <= 1e-6)
+            if not bool(matches.all()):
+                bad_index = int(matches[~matches].index[0])
+                return (
+                    False,
+                    f"numeric mismatch at row {bad_index}, column {col}: "
+                    f"got {right.iloc[bad_index]}, expected {left.iloc[bad_index]}",
+                )
+        else:
+            left = golden_series.fillna("<NULL>").astype(str)
+            right = result_series.fillna("<NULL>").astype(str)
+            matches = left == right
+            if not bool(matches.all()):
+                bad_index = int(matches[~matches].index[0])
+                return (
+                    False,
+                    f"value mismatch at row {bad_index}, column {col}: "
+                    f"got {right.iloc[bad_index]!r}, expected {left.iloc[bad_index]!r}",
+                )
+
+    return True, "ok"
+
+
+def check_semantic(
     golden_df: pd.DataFrame,
     result_df: pd.DataFrame,
     check_type: str,
 ) -> tuple[bool, str]:
-    """返回 (pass, reason)"""
-    if result_df.empty:
-        return False, "result is empty"
-
-    if check_type == "row_count_gte_1":
-        return True, "ok"
+    if check_type in {"result_match", "row_count_gte_1"}:
+        return _compare_full_result(golden_df, result_df)
 
     if check_type == "row_count_match":
         if len(result_df) != len(golden_df):
             return False, f"row count mismatch: got {len(result_df)}, expected {len(golden_df)}"
-        return True, "ok"
+        return _compare_full_result(golden_df, result_df)
 
     if check_type == "numeric_close":
-        g_nums = golden_df.select_dtypes(include="number")
-        r_nums = result_df.select_dtypes(include="number")
-        if g_nums.empty or r_nums.empty:
-            return True, "no numeric cols to compare"
-        g_total = float(g_nums.iloc[:, 0].sum())
-        r_total = float(r_nums.iloc[:, 0].sum())
-        if g_total == 0:
-            return r_total == 0, f"golden total=0, result total={r_total}"
-        diff = abs(r_total - g_total) / abs(g_total)
-        if diff > NUMERIC_TOLERANCE:
-            return False, f"numeric diff {diff:.2%} > tolerance {NUMERIC_TOLERANCE:.0%}"
-        return True, "ok"
+        golden = _normalize_frame(golden_df)
+        result = _normalize_frame(result_df)
+        if len(result) != len(golden):
+            return False, f"row count mismatch: got {len(result)}, expected {len(golden)}"
+        golden_numbers = golden.select_dtypes(include="number")
+        result_numbers = result.select_dtypes(include="number")
+        if list(golden_numbers.columns) != list(result_numbers.columns):
+            return False, "numeric columns mismatch"
+        return _compare_full_result(golden_numbers, result_numbers)
 
-    # 默认：columns_match - 结果至少包含 golden 的数值列数量
-    g_numeric_count = len(golden_df.select_dtypes(include="number").columns)
-    r_numeric_count = len(result_df.select_dtypes(include="number").columns)
-    if r_numeric_count < g_numeric_count:
-        return False, f"too few numeric cols: got {r_numeric_count}, expected >= {g_numeric_count}"
-    return True, "ok"
+    return False, f"unsupported check_type: {check_type}"
 
 
-# ---------------------------------------------------------------------------
-# Layer 3：指标合规性（静态分析）
-# ---------------------------------------------------------------------------
-
-def _check_compliance(
+def check_compliance(
     sql: str,
     required_tables: list[str],
     required_patterns: list[str],
 ) -> tuple[bool, str]:
-    """返回 (pass, reason)"""
     sql_lower = sql.lower()
-
-    for table in required_tables:
-        # 至少有一个必须出现（OR 逻辑）
-        if not any(t.lower() in sql_lower for t in required_tables):
-            return False, f"none of required tables found: {required_tables}"
-        break  # 只需有一个命中即可
-
+    if required_tables and not any(table.lower() in sql_lower for table in required_tables):
+        return False, f"none of required tables found: {required_tables}"
     for pattern in required_patterns:
         if not re.search(pattern, sql, re.IGNORECASE):
             return False, f"required pattern not found: {pattern}"
-
     return True, "ok"
 
-
-# ---------------------------------------------------------------------------
-# 统计汇总
-# ---------------------------------------------------------------------------
 
 def _pct(num: int, den: int) -> float:
     return round(num / den * 100, 2) if den else 0.0
 
 
-def _build_summary(results: list[QuestionResult]) -> dict:
+def build_summary(results: list[QuestionResult]) -> dict:
     total = len(results)
-    gen_ok = sum(1 for r in results if r.generation_success)
-    guard_ok = sum(1 for r in results if r.guard_pass)
-    exec_ok = sum(1 for r in results if r.execution_success)
-
-    semantic_eligible = [r for r in results if r.has_golden and r.execution_success]
-    semantic_ok = sum(1 for r in semantic_eligible if r.semantic_pass)
-
-    compliance_eligible = [r for r in results if r.has_compliance and r.guard_pass]
-    compliance_ok = sum(1 for r in compliance_eligible if r.compliance_pass)
-
+    semantic_cases = [result for result in results if result.has_golden]
+    compliance_cases = [result for result in results if result.has_compliance]
     return {
         "total": total,
-        "generation_success": gen_ok,
-        "guard_pass": guard_ok,
-        "execution_success": exec_ok,
-        "semantic_eligible": len(semantic_eligible),
-        "semantic_pass": semantic_ok,
-        "compliance_eligible": len(compliance_eligible),
-        "compliance_pass": compliance_ok,
-        "generation_success_rate_pct": _pct(gen_ok, total),
-        "guard_pass_rate_pct": _pct(guard_ok, total),
-        "execution_success_rate_pct": _pct(exec_ok, total),
-        "semantic_pass_rate_pct": _pct(semantic_ok, len(semantic_eligible)),
-        "compliance_pass_rate_pct": _pct(compliance_ok, len(compliance_eligible)),
+        "generation_success_rate_pct": _pct(sum(r.generation_success for r in results), total),
+        "guard_pass_rate_pct": _pct(sum(r.guard_pass for r in results), total),
+        "execution_success_rate_pct": _pct(sum(r.execution_success for r in results), total),
+        "semantic_pass_rate_pct": _pct(sum(r.semantic_pass is True for r in semantic_cases), len(semantic_cases)),
+        "semantic_denominator": len(semantic_cases),
+        "compliance_pass_rate_pct": _pct(
+            sum(r.compliance_pass is True for r in compliance_cases), len(compliance_cases)
+        ),
+        "compliance_denominator": len(compliance_cases),
+        "end_to_end_task_success_rate_pct": _pct(sum(r.end_to_end_pass for r in results), total),
+        "end_to_end_success": sum(r.end_to_end_pass for r in results),
     }
 
 
 def _build_breakdown(results: list[QuestionResult], key: str) -> dict:
     groups: dict[str, list[QuestionResult]] = {}
-    for r in results:
-        val = getattr(r, key)
-        groups.setdefault(val, []).append(r)
-
-    breakdown = {}
-    for val, group in sorted(groups.items()):
-        total = len(group)
-        exec_ok = sum(1 for r in group if r.execution_success)
-        sem_eligible = [r for r in group if r.has_golden and r.execution_success]
-        sem_ok = sum(1 for r in sem_eligible if r.semantic_pass)
-        breakdown[val] = {
-            "total": total,
-            "execution_success_rate_pct": _pct(exec_ok, total),
-            "semantic_pass_rate_pct": _pct(sem_ok, len(sem_eligible)) if sem_eligible else None,
+    for result in results:
+        groups.setdefault(str(getattr(result, key)), []).append(result)
+    return {
+        value: {
+            "total": len(group),
+            "execution_success_rate_pct": _pct(sum(r.execution_success for r in group), len(group)),
+            "semantic_pass_rate_pct": _pct(sum(r.semantic_pass is True for r in group), len(group)),
+            "end_to_end_task_success_rate_pct": _pct(sum(r.end_to_end_pass for r in group), len(group)),
         }
-    return breakdown
+        for value, group in sorted(groups.items())
+    }
 
-
-# ---------------------------------------------------------------------------
-# 主流程
-# ---------------------------------------------------------------------------
 
 def load_questions(path: Path) -> list[dict]:
-    rows: list[dict] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            rows.append(json.loads(line))
-    return rows
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def main() -> None:
-    load_dotenv(PROJECT_ROOT / ".env")
-
-    for p in (QUESTIONS_PATH, METRICS_PATH, DB_PATH):
-        if not p.exists():
-            raise FileNotFoundError(f"not found: {p}")
-
-    questions = load_questions(QUESTIONS_PATH)
+def run_evaluation(questions_path: Path, use_llm: bool) -> dict:
+    questions = load_questions(questions_path)
+    llm_config = resolve_llm_config()
     metrics_context = MetricsStore(METRICS_PATH).compressed_context(max_items=30)
     guard = SQLGuard(default_limit=500)
-    conn = duckdb.connect(str(DB_PATH), read_only=True)
-
+    connection = duckdb.connect(str(DB_PATH), read_only=True)
     results: list[QuestionResult] = []
 
     try:
         for row in questions:
-            qid = int(row.get("id", 0))
-            question = str(row.get("question", "")).strip()
-            if not question:
-                continue
-
-            res = QuestionResult(
-                id=qid,
-                question=question,
+            result = QuestionResult(
+                id=int(row.get("id", 0)),
+                question=str(row.get("question", "")).strip(),
                 difficulty=str(row.get("difficulty", "unknown")),
                 category=str(row.get("category", "unknown")),
             )
-
             golden_sql = str(row.get("golden_sql", "")).strip()
-            check_type = str(row.get("check_type", "row_count_gte_1"))
-            required_tables: list[str] = row.get("required_tables", [])
-            required_patterns: list[str] = row.get("required_patterns", [])
-            res.has_golden = bool(golden_sql)
-            res.has_compliance = bool(required_tables or required_patterns)
+            check_type = str(row.get("check_type", "result_match"))
+            required_tables = list(row.get("required_tables", []))
+            required_patterns = list(row.get("required_patterns", []))
+            result.has_golden = bool(golden_sql)
+            result.has_compliance = bool(required_tables or required_patterns)
 
-            # --- Layer 1a: 生成 SQL ---
             try:
-                sql, _ = generate_sql(question, metrics_context, use_llm=True)
-                res.generation_success = True
-                res.generated_sql = sql
-            except Exception as e:
-                res.failure_stage = "generation"
-                res.failure_detail = str(e)
-                results.append(res)
+                generated_sql, source = generate_sql(
+                    result.question,
+                    metrics_context,
+                    use_llm=use_llm,
+                )
+                result.generated_sql = generated_sql
+                result.sql_source = source
+                result.generation_success = True
+            except Exception as exc:  # noqa: BLE001
+                result.failure_stage = "generation"
+                result.failure_detail = str(exc)
+                results.append(result)
                 continue
 
-            # --- Layer 1b: Guard ---
             try:
-                guarded_sql = guard.validate_and_rewrite(sql)
-                res.guard_pass = True
-            except SQLGuardError as e:
-                res.failure_stage = "guard"
-                res.failure_detail = str(e)
-                results.append(res)
+                guarded_sql = guard.validate_and_rewrite(generated_sql)
+                result.guard_pass = True
+            except SQLGuardError as exc:
+                result.failure_stage = "guard"
+                result.failure_detail = str(exc)
+                results.append(result)
                 continue
 
-            # --- Layer 3: 合规性静态检查（Guard 通过后做）---
-            if res.has_compliance:
-                comp_pass, comp_reason = _check_compliance(
+            if result.has_compliance:
+                result.compliance_pass, reason = check_compliance(
                     guarded_sql, required_tables, required_patterns
                 )
-                res.compliance_pass = comp_pass
-                if not comp_pass and not res.failure_detail:
-                    res.failure_detail = f"compliance: {comp_reason}"
+                if not result.compliance_pass:
+                    result.failure_stage = "compliance"
+                    result.failure_detail = reason
 
-            # --- Layer 1c: 执行 ---
             try:
-                result_df = conn.execute(guarded_sql).fetchdf()
-                res.execution_success = True
-            except Exception as e:
-                res.failure_stage = "execution"
-                res.failure_detail = str(e)
-                results.append(res)
+                actual_df = connection.execute(guarded_sql).fetchdf()
+                result.execution_success = True
+            except Exception as exc:  # noqa: BLE001
+                result.failure_stage = "execution"
+                result.failure_detail = str(exc)
+                results.append(result)
                 continue
 
-            # --- Layer 2: 语义正确性对比 ---
-            if res.has_golden:
+            if result.has_golden:
                 try:
-                    golden_df = conn.execute(golden_sql).fetchdf()
-                    sem_pass, sem_reason = _check_semantic(golden_df, result_df, check_type)
-                    res.semantic_pass = sem_pass
-                    if not sem_pass and not res.failure_stage:
-                        res.failure_stage = "semantic"
-                        res.failure_detail = sem_reason
-                except Exception as e:
-                    res.semantic_pass = False
-                    res.failure_stage = "semantic_golden_error"
-                    res.failure_detail = str(e)
+                    golden_df = connection.execute(golden_sql).fetchdf()
+                    result.semantic_pass, reason = check_semantic(golden_df, actual_df, check_type)
+                    if not result.semantic_pass:
+                        result.failure_stage = "semantic"
+                        result.failure_detail = reason
+                except Exception as exc:  # noqa: BLE001
+                    result.semantic_pass = False
+                    result.failure_stage = "semantic_golden_error"
+                    result.failure_detail = str(exc)
 
-            results.append(res)
-
+            results.append(result)
     finally:
-        conn.close()
-
-    # --- 输出报告 ---
-    summary = _build_summary(results)
-    by_difficulty = _build_breakdown(results, "difficulty")
-    by_category = _build_breakdown(results, "category")
+        connection.close()
 
     failures = [
         {
-            "id": r.id,
-            "question": r.question,
-            "difficulty": r.difficulty,
-            "category": r.category,
-            "failure_stage": r.failure_stage,
-            "failure_detail": r.failure_detail,
-            "generated_sql": r.generated_sql[:300] if r.generated_sql else "",
+            "id": result.id,
+            "question": result.question,
+            "difficulty": result.difficulty,
+            "category": result.category,
+            "failure_stage": result.failure_stage,
+            "failure_detail": result.failure_detail,
+            "sql_source": result.sql_source,
+            "generated_sql": result.generated_sql[:500],
         }
-        for r in results
-        if r.failure_stage or r.semantic_pass is False or r.compliance_pass is False
+        for result in results
+        if not result.end_to_end_pass
     ]
-
-    report = {
-        "summary": summary,
-        "by_difficulty": by_difficulty,
-        "by_category": by_category,
+    return {
+        "evaluation_metadata": {
+            "evaluated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "questions_file": str(questions_path.relative_to(PROJECT_ROOT)),
+            "provider": llm_config["provider"] if use_llm else "deterministic_fallback",
+            "model": llm_config["model"] if use_llm else "rule_fallback",
+            "strict_result_contract": "exact columns + complete result equivalence",
+            "numeric_tolerance": NUMERIC_TOLERANCE,
+        },
+        "requested_mode": "llm" if use_llm else "deterministic_fallback",
+        "sql_source_counts": dict(Counter(result.sql_source or "generation_failed" for result in results)),
+        "summary": build_summary(results),
+        "by_difficulty": _build_breakdown(results, "difficulty"),
+        "by_category": _build_breakdown(results, "category"),
         "failures": failures,
     }
 
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--questions", type=Path, default=DEFAULT_QUESTIONS_PATH)
+    parser.add_argument("--use-llm", action="store_true", help="Call the configured remote model.")
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    load_dotenv(PROJECT_ROOT / ".env")
+
+    for path in (args.questions, METRICS_PATH, DB_PATH):
+        if not path.exists():
+            raise FileNotFoundError(f"not found: {path}")
+
+    report = run_evaluation(args.questions, use_llm=args.use_llm)
+    rendered = json.dumps(report, ensure_ascii=False, indent=2)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
 
 
 if __name__ == "__main__":

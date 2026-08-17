@@ -264,6 +264,7 @@ def generate_sql(
     metrics_context: str,
     use_llm: bool = True,
     model: str | None = None,
+    retry_context: str | None = None,
 ) -> tuple[str, str]:
     config = resolve_llm_config(model=model)
     provider = str(config["provider"])
@@ -277,12 +278,18 @@ def generate_sql(
     if use_llm and api_key:
         client = OpenAI(api_key=api_key, base_url=base_url)
         try:
+            user_content = question
+            if retry_context:
+                user_content += (
+                    "\n\nA previous attempt failed deterministic validation. "
+                    "Correct the SQL using this feedback:\n" + retry_context
+                )
             response = client.chat.completions.create(
                 model=resolved_model,
                 temperature=0,
                 messages=[
                     {"role": "system", "content": _build_system_prompt(metrics_context)},
-                    {"role": "user", "content": question},
+                    {"role": "user", "content": user_content},
                 ],
             )
             text = response.choices[0].message.content or ""

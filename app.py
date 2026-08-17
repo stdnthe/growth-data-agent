@@ -3,23 +3,22 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from agent.attribution import GmvAttributionReport, analyze_gmv_change_drivers, build_gmv_summary, generate_attribution_narrative
-from agent.insight import generate_insight
-from agent.intent_router import route
-from agent.llm_sql import generate_sql, resolve_llm_config
-from agent.metrics_store import MetricsStore
-from agent.sql_guard import SQLGuard, SQLGuardError
+from agent.attribution import GmvAttributionReport, build_gmv_summary
+from agent.feedback import FeedbackRecord, FeedbackStore
+from agent.llm_sql import resolve_llm_config
+from agent.models import AnalysisRun
+from agent.pipeline import PipelineConfig, execute_analysis
 
 load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("OLIST_DB_PATH", str(PROJECT_ROOT / "olist.duckdb")))
 METRICS_PATH = PROJECT_ROOT / "metrics" / "metrics.yml"
+FEEDBACK_PATH = PROJECT_ROOT / ".runtime" / "feedback.jsonl"
 LLM_RUNTIME = resolve_llm_config()
 LLM_PROVIDER = str(LLM_RUNTIME["provider"])
 MODEL = str(LLM_RUNTIME["model"])
@@ -29,31 +28,10 @@ ACTIVE_API_KEY_SOURCE = str(LLM_RUNTIME["api_key_source"])
 
 SAMPLE_QUESTIONS = [
     "近30天GMV走势（按天）",
-    "上个月订单数、GMV、客单价分别是多少？",
-    "按州(state)看GMV Top 10（近90天）",
-    "准时送达率按月趋势（最近6个月）",
-    "延迟送达订单平均评分 vs 准时订单平均评分（最近6个月）",
-    "新客占比按月趋势（今年以来）",
+    "为什么最近GMV下降？",
+    "最近销售表现怎么样？",
+    "为什么准时送达率下降？",
 ]
-
-
-@st.cache_data(show_spinner=False)
-def load_metrics_context(metrics_file: str) -> str:
-    store = MetricsStore(metrics_file)
-    return store.compressed_context(max_items=30)
-
-
-def run_duckdb_query(sql: str) -> pd.DataFrame:
-    if not DB_PATH.exists():
-        raise FileNotFoundError(
-            f"DuckDB 文件不存在：{DB_PATH}。请先运行 python warehouse/load_olist_to_duckdb.py"
-        )
-
-    conn = duckdb.connect(str(DB_PATH), read_only=True)
-    try:
-        return conn.execute(sql).fetchdf()
-    finally:
-        conn.close()
 
 
 def _pick_x_column(df: pd.DataFrame) -> str | None:
@@ -108,29 +86,29 @@ def render_chart(df: pd.DataFrame, chart_type: str) -> None:
 
     if chart_type == "Line":
         if x_col:
-            st.line_chart(chart_df, x=x_col, y=y_cols, use_container_width=True)
+            st.line_chart(chart_df, x=x_col, y=y_cols, width="stretch")
         else:
-            st.line_chart(chart_df[y_cols], use_container_width=True)
+            st.line_chart(chart_df[y_cols], width="stretch")
         return
 
     if chart_type == "Area":
         if x_col:
-            st.area_chart(chart_df, x=x_col, y=y_cols, use_container_width=True)
+            st.area_chart(chart_df, x=x_col, y=y_cols, width="stretch")
         else:
-            st.area_chart(chart_df[y_cols], use_container_width=True)
+            st.area_chart(chart_df[y_cols], width="stretch")
         return
 
     if chart_type == "Bar":
         if x_col:
-            st.bar_chart(chart_df, x=x_col, y=y_cols, use_container_width=True)
+            st.bar_chart(chart_df, x=x_col, y=y_cols, width="stretch")
         else:
-            st.bar_chart(chart_df[y_cols], use_container_width=True)
+            st.bar_chart(chart_df[y_cols], width="stretch")
         return
 
     # Scatter chart supports one x and one y, so we pick the first two numeric columns.
     x_scatter = y_cols[0]
     y_scatter = y_cols[1] if len(y_cols) > 1 else y_cols[0]
-    st.scatter_chart(chart_df, x=x_scatter, y=y_scatter, use_container_width=True)
+    st.scatter_chart(chart_df, x=x_scatter, y=y_scatter, width="stretch")
 
 
 def _fmt_currency(value: float | None) -> str:
@@ -155,7 +133,7 @@ def _render_driver_table(df: pd.DataFrame, title: str, value_name: str) -> None:
     for col in ("gmv_current", "gmv_previous", "contribution"):
         if col in shown.columns:
             shown[col] = shown[col].map(lambda x: round(float(x), 2))
-    st.dataframe(shown, use_container_width=True)
+    st.dataframe(shown, width="stretch")
 
 
 def _render_cross_dimension_table(df: pd.DataFrame, title: str) -> None:
@@ -168,7 +146,7 @@ def _render_cross_dimension_table(df: pd.DataFrame, title: str) -> None:
     for col in ("gmv_current", "gmv_previous", "contribution"):
         if col in shown.columns:
             shown[col] = shown[col].map(lambda x: round(float(x), 2))
-    st.dataframe(shown, use_container_width=True)
+    st.dataframe(shown, width="stretch")
 
 
 def render_gmv_attribution(report: GmvAttributionReport) -> None:
@@ -208,7 +186,7 @@ def render_gmv_attribution(report: GmvAttributionReport) -> None:
             {"factor": "AOV效应", "contribution": report.aov_effect},
         ]
     )
-    st.dataframe(decomp_df, use_container_width=True)
+    st.dataframe(decomp_df, width="stretch")
 
     if report.gmv_delta < 0:
         _render_cross_dimension_table(report.all_drops, "全维度 TopN 下拉贡献（州/品类/商家）")
@@ -234,78 +212,151 @@ def render_gmv_attribution(report: GmvAttributionReport) -> None:
             _render_driver_table(report.seller_drops, "拖累增长：商家（Seller）", "seller_id")
 
 
-def _run_attribution(question: str, window_days: int, top_n: int) -> None:
-    st.caption(f"识别为归因问题，分析窗口：{window_days} 天")
-    try:
-        report = analyze_gmv_change_drivers(
-            db_path=DB_PATH,
-            window_days=window_days,
-            top_n=top_n,
+def _render_analysis_plan(run: AnalysisRun) -> None:
+    intent = run.intent
+    with st.expander("分析计划与口径", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("任务类型", "指标诊断" if intent.task_type == "metric_diagnosis" else "指标查询")
+        c2.metric("指标", intent.metric or "待确认")
+        c3.metric("时间范围", intent.time_range or "待确认")
+        c4.metric("Workflow", run.workflow)
+        st.caption(
+            f"粒度：{intent.grain or '自动'} ｜ 比较：{intent.comparison or '无'} ｜ "
+            f"维度：{', '.join(intent.dimensions) or '无'} ｜ 置信度：{intent.confidence:.0%}"
         )
-    except Exception as e:  # noqa: BLE001
-        st.error(f"归因计算失败：{e}")
+        if run.metric_context:
+            st.markdown("**指标口径**")
+            for item in run.metric_context:
+                st.write(f"- {item}")
+        for assumption in intent.assumptions:
+            st.warning(f"假设：{assumption}")
+
+
+def _render_validations(run: AnalysisRun) -> None:
+    if not run.validations:
         return
+    with st.expander("确定性校验", expanded=True):
+        rows = [
+            {
+                "状态": "通过" if item.passed else "未通过",
+                "校验项": item.name,
+                "级别": item.severity,
+                "说明": item.message,
+            }
+            for item in run.validations
+        ]
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-    narrative = generate_attribution_narrative(report, question, LLM_RUNTIME)
-    st.info(narrative)
-    render_gmv_attribution(report)
+
+def _render_run_metadata(run: AnalysisRun) -> None:
+    with st.expander("运行元数据", expanded=False):
+        st.json(
+            {
+                "run_id": run.run_id,
+                "status": run.status,
+                "provider": run.provider,
+                "model": run.model,
+                "prompt_version": run.prompt_version,
+                "metric_version": run.metric_version,
+                "latency_ms": run.latency_ms,
+                "sql_source": run.sql_source,
+                "attempts": [attempt.to_dict() for attempt in run.attempts],
+                "langsmith_trace_active": run.trace_enabled,
+            }
+        )
 
 
-def _run_retrieval(
-    question: str,
-    use_llm: bool,
+def _render_feedback(run: AnalysisRun) -> None:
+    if run.status not in {"success", "success_with_warnings"}:
+        return
+    with st.expander("这次分析有帮助吗？", expanded=False):
+        with st.form(f"feedback_{run.run_id}"):
+            helpful_label = st.radio("总体评价", ["有帮助", "需要改进"], horizontal=True)
+            feedback_type = st.selectbox(
+                "原因",
+                ["结果正确", "数字不对", "指标口径不对", "没有回答问题", "分析方法不对", "建议不可执行"],
+            )
+            comment = st.text_input("补充说明（可选）")
+            submitted = st.form_submit_button("提交反馈")
+        if submitted:
+            FeedbackStore(FEEDBACK_PATH).append(
+                FeedbackRecord(
+                    run_id=run.run_id,
+                    helpful=helpful_label == "有帮助",
+                    feedback_type=feedback_type,
+                    comment=comment,
+                    question=run.question,
+                    workflow=run.workflow,
+                    failure_stage=run.failure_stage,
+                )
+            )
+            st.success("反馈已记录，将用于补充 Golden Dataset。")
+
+
+def render_analysis_run(
+    run: AnalysisRun,
+    *,
     show_sql: bool,
     show_chart: bool,
     chart_type: str,
-    default_limit: int,
 ) -> None:
-    try:
-        metrics_context = load_metrics_context(str(METRICS_PATH))
-    except Exception as e:  # noqa: BLE001
-        st.error(f"读取指标字典失败：{e}")
+    _render_analysis_plan(run)
+
+    if run.status == "needs_clarification":
+        st.warning(run.insight or "需要补充信息后才能继续分析。")
+        _render_run_metadata(run)
         return
 
-    try:
-        sql, source = generate_sql(
-            question=question,
-            metrics_context=metrics_context,
-            use_llm=use_llm,
-            model=MODEL,
-        )
-    except Exception as e:  # noqa: BLE001
-        st.error(f"SQL 生成失败：{e}")
+    if run.status == "failed":
+        st.error(f"分析失败（阶段：{run.failure_stage or 'unknown'}）：{run.failure_detail or '未知错误'}")
+        if show_sql and run.generated_sql:
+            st.code(run.generated_sql, language="sql")
+        _render_validations(run)
+        _render_run_metadata(run)
         return
 
-    guard = SQLGuard(default_limit=default_limit)
-    try:
-        safe_sql = guard.validate_and_rewrite(sql)
-    except SQLGuardError as e:
-        st.error(f"SQL Guard 拒绝执行：{e}")
-        if show_sql:
-            st.code(sql, language="sql")
-        return
+    if run.insight:
+        st.info(run.insight)
+    for caveat in run.caveats:
+        st.warning(f"限制：{caveat}")
 
-    if show_sql:
-        st.code(safe_sql, language="sql")
+    if run.attribution_report is not None:
+        render_gmv_attribution(run.attribution_report)
+    elif run.result is not None:
+        if show_sql and run.generated_sql:
+            st.subheader("查询 SQL")
+            st.code(run.generated_sql, language="sql")
+        st.subheader("查询结果")
+        st.dataframe(run.result, width="stretch")
+        if show_chart:
+            render_chart(run.result, chart_type)
 
-    try:
-        result_df = run_duckdb_query(safe_sql)
-    except Exception as e:  # noqa: BLE001
-        st.error(f"SQL 执行失败：{e}")
-        return
-
-    st.success(f"查询成功（SQL 来源：{source}，模型：{MODEL}）")
-    st.dataframe(result_df, use_container_width=True)
-    if show_chart:
-        render_chart(result_df, chart_type)
-    st.info(generate_insight(result_df))
+    _render_validations(run)
+    _render_run_metadata(run)
+    _render_feedback(run)
 
 
 def main() -> None:
     st.set_page_config(page_title="Olist Growth Copilot", layout="wide")
     st.title("Olist Growth Copilot")
     provider_label = "OpenAI" if LLM_PROVIDER == "openai" else "DeepSeek"
-    st.caption(f"电商/增长分析对话式数据分析助手（DuckDB + Streamlit + {provider_label} SQL）")
+    st.caption(
+        f"可信电商增长 Data Agent：自然语言问数、确定性 GMV 归因与可审计分析运行"
+        f"（DuckDB + Streamlit + {provider_label}）"
+    )
+
+    proof_1, proof_2, proof_3, proof_4 = st.columns(4)
+    proof_1.metric("指标语义层", "28 个指标")
+    proof_2.metric("可评估 Workflow", "2 条")
+    proof_3.metric("Golden Cases", "48 道")
+    proof_4.metric("SQL 安全", "只读白名单")
+
+    with st.expander("产品边界与可信性原则"):
+        st.markdown(
+            "高频、路径明确的问题走可评估 Workflow；模糊问题先澄清。"
+            "当前确定性自动归因仅支持 GMV。Olist 不含曝光、点击、广告渠道与成本数据，"
+            "因此不对 CTR、渠道转化率、CAC 或 ROAS 给出伪精确结论。"
+        )
 
     with st.sidebar:
         st.header("配置")
@@ -315,6 +366,12 @@ def main() -> None:
         chart_type = st.selectbox("Chart Type", options=["Auto", "Line", "Bar", "Area", "Scatter"], index=0)
         attribution_top_n = st.slider("Attribution Top N", min_value=3, max_value=15, value=5, step=1)
         default_limit = st.number_input("Default LIMIT", min_value=100, max_value=10000, value=2000, step=100)
+        max_retries = st.selectbox("Deterministic Retry", options=[0, 1], index=1)
+        enable_tracing = st.toggle(
+            "LangSmith Trace",
+            value=os.getenv("LANGSMITH_TRACING", "false").lower() in {"1", "true", "yes", "on"},
+            help="需要安装可选 langsmith 依赖并配置 LANGSMITH_API_KEY。Trace 失败不会阻塞分析。",
+        )
 
         if use_llm and not ACTIVE_API_KEY:
             st.info(f"未检测到 {ACTIVE_API_KEY_NAME}（环境变量或 Keychain）：将自动使用规则 fallback 生成 SQL。")
@@ -324,7 +381,7 @@ def main() -> None:
         st.divider()
         st.subheader("示例问题")
         for idx, q in enumerate(SAMPLE_QUESTIONS):
-            if st.button(q, key=f"sample_{idx}", use_container_width=True):
+            if st.button(q, key=f"sample_{idx}", width="stretch"):
                 st.session_state["question"] = q
 
     if "question" not in st.session_state:
@@ -337,21 +394,34 @@ def main() -> None:
         placeholder="例如：近30天GMV走势（按天）",
     )
 
-    run = st.button("Run", type="primary")
-    if not run:
-        return
+    if st.button("运行可信分析", type="primary"):
+        question = st.session_state.get("question", "").strip()
+        if not question:
+            st.warning("请先输入问题。")
+        else:
+            with st.spinner("正在理解问题、执行分析并进行确定性校验..."):
+                st.session_state["last_analysis_run"] = execute_analysis(
+                    question,
+                    PipelineConfig(
+                        db_path=DB_PATH,
+                        metrics_path=METRICS_PATH,
+                        use_llm=use_llm,
+                        model=MODEL,
+                        default_limit=int(default_limit),
+                        attribution_top_n=int(attribution_top_n),
+                        max_retries=int(max_retries),
+                        tracing_enabled=enable_tracing,
+                    ),
+                )
 
-    question = st.session_state.get("question", "").strip()
-    if not question:
-        st.warning("请先输入问题。")
-        return
-
-    route_result = route(question)
-
-    if route_result.intent == "attribution":
-        _run_attribution(question, route_result.window_days, int(attribution_top_n))
-    else:
-        _run_retrieval(question, use_llm, show_sql, show_chart, chart_type, int(default_limit))
+    last_run = st.session_state.get("last_analysis_run")
+    if isinstance(last_run, AnalysisRun):
+        render_analysis_run(
+            last_run,
+            show_sql=show_sql,
+            show_chart=show_chart,
+            chart_type=chart_type,
+        )
 
 
 if __name__ == "__main__":

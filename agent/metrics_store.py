@@ -21,12 +21,14 @@ class MetricsStore:
     def __init__(self, metrics_path: str | Path):
         self.metrics_path = Path(metrics_path)
         self.metrics: list[MetricDefinition] = []
+        self.version: str = "unknown"
 
     def load(self) -> list[MetricDefinition]:
         if not self.metrics_path.exists():
             raise FileNotFoundError(f"Metrics file not found: {self.metrics_path}")
 
         raw: dict[str, Any] = yaml.safe_load(self.metrics_path.read_text(encoding="utf-8")) or {}
+        self.version = str(raw.get("version", "unknown"))
         metric_items = raw.get("metrics", [])
 
         if not isinstance(metric_items, list):
@@ -49,6 +51,13 @@ class MetricsStore:
 
         self.metrics = [m for m in parsed if m.id]
         return self.metrics
+
+    def get(self, metric_id: str | None) -> MetricDefinition | None:
+        if not metric_id:
+            return None
+        if not self.metrics:
+            self.load()
+        return next((metric for metric in self.metrics if metric.id == metric_id), None)
 
     def compressed_context(self, max_items: int = 30) -> str:
         if not self.metrics:

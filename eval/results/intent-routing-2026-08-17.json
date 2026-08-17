@@ -1,0 +1,92 @@
+{
+  "evaluation_type": "deterministic_intent_routing",
+  "summary": {
+    "total": 8,
+    "passed": 8,
+    "intent_accuracy_pct": 100.0
+  },
+  "results": [
+    {
+      "id": "I01",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true
+      }
+    },
+    {
+      "id": "I02",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true
+      }
+    },
+    {
+      "id": "I03",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true
+      }
+    },
+    {
+      "id": "I04",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true
+      }
+    },
+    {
+      "id": "I05",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true,
+        "dimensions": true
+      }
+    },
+    {
+      "id": "I06",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true,
+        "grain": true
+      }
+    },
+    {
+      "id": "I07",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true
+      }
+    },
+    {
+      "id": "I08",
+      "passed": true,
+      "checks": {
+        "metric": true,
+        "workflow": true,
+        "action": true,
+        "window_days": true
+      }
+    }
+  ]
+}
