@@ -25,6 +25,7 @@ class PipelineTests(unittest.TestCase):
         run = execute_analysis("最近销售表现怎么样？", self.config)
         self.assertEqual(run.status, "needs_clarification")
         self.assertIsNone(run.generated_sql)
+        self.assertEqual(run.steps[-1].key, "human_confirmation")
 
     @unittest.skipUnless((PROJECT_ROOT / "olist.duckdb").exists(), "demo database is missing")
     def test_retrieval_returns_auditable_run(self) -> None:
@@ -34,6 +35,11 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(run.validation_passed)
         self.assertIsNotNone(run.generated_sql)
         self.assertGreater(run.result_summary()["row_count"], 0)
+        step_keys = {step.key for step in run.steps}
+        self.assertIn("parse_intent", step_keys)
+        self.assertIn("validate_sql_1", step_keys)
+        self.assertIn("execute_duckdb_1", step_keys)
+        self.assertIn("validate_result_1", step_keys)
 
     def test_feedback_store_appends_jsonl(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

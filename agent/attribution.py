@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
@@ -36,6 +36,7 @@ class GmvAttributionReport:
     seller_gains: pd.DataFrame
     all_drops: pd.DataFrame
     all_gains: pd.DataFrame
+    evidence_sql: dict[str, str] = field(default_factory=dict)
 
 
 def _fmt_money(v: float) -> str:
@@ -147,6 +148,7 @@ def build_gmv_summary(report: GmvAttributionReport) -> str:
     top_dim = _top_dimension_point(report)
     if top_dim is not None:
         dim_name, dim_value, contribution, share = top_dim
+        dim_value = dim_value.replace("_", " ")
         base += (
             f"{dim_name}维度中，{dim_value} 贡献 {_fmt_money(contribution)}，"
             f"占总变动 {share * 100:.1f}%。"
@@ -154,9 +156,9 @@ def build_gmv_summary(report: GmvAttributionReport) -> str:
     return base
 
 
-def _get_summary(conn: duckdb.DuckDBPyConnection, window_days: int) -> dict:
+def _build_summary_sql(window_days: int) -> str:
     days = int(window_days)
-    query = f"""
+    return f"""
 WITH bounds AS (
   SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_dt
   FROM vw_fact_items
@@ -192,6 +194,10 @@ SELECT
   COUNT(DISTINCT CASE WHEN period = 'previous' THEN customer_unique_id END) AS buyers_previous
 FROM labeled
 """
+
+
+def _get_summary(conn: duckdb.DuckDBPyConnection, window_days: int) -> dict:
+    query = _build_summary_sql(window_days)
     row = conn.execute(query).fetchone()
     if row is None:
         raise ValueError("无法计算归因：未读取到 summary 结果。")
@@ -212,14 +218,13 @@ FROM labeled
     return dict(zip(keys, row))
 
 
-def _get_dimension_driver_df(
-    conn: duckdb.DuckDBPyConnection,
+def _build_dimension_driver_sql(
     window_days: int,
     top_n: int,
     dimension_sql: str,
     join_sql: str = "",
     trend: str = "drop",
-) -> pd.DataFrame:
+) -> str:
     days = int(window_days)
     n = int(top_n)
 
@@ -229,7 +234,7 @@ def _get_dimension_driver_df(
     condition = "contribution < 0" if trend == "drop" else "contribution > 0"
     order_by = "contribution ASC" if trend == "drop" else "contribution DESC"
 
-    query = f"""
+    return f"""
 WITH bounds AS (
   SELECT CAST(MAX(order_purchase_ts) AS DATE) AS anchor_dt
   FROM vw_fact_items
@@ -277,6 +282,23 @@ WHERE {condition}
 ORDER BY {order_by}
 LIMIT {n}
 """
+
+
+def _get_dimension_driver_df(
+    conn: duckdb.DuckDBPyConnection,
+    window_days: int,
+    top_n: int,
+    dimension_sql: str,
+    join_sql: str = "",
+    trend: str = "drop",
+) -> pd.DataFrame:
+    query = _build_dimension_driver_sql(
+        window_days=window_days,
+        top_n=top_n,
+        dimension_sql=dimension_sql,
+        join_sql=join_sql,
+        trend=trend,
+    )
     return conn.execute(query).fetchdf()
 
 
@@ -430,11 +452,11 @@ def analyze_gmv_change_drivers(
 
     return GmvAttributionReport(
         window_days=days,
-        anchor_date=str(summary["anchor_date"]),
-        current_start=str(summary["current_start"]),
-        current_end=str(summary["current_end"]),
-        previous_start=str(summary["previous_start"]),
-        previous_end=str(summary["previous_end"]),
+        anchor_date=str(summary["anchor_date"]).split(" ")[0],
+        current_start=str(summary["current_start"]).split(" ")[0],
+        current_end=str(summary["current_end"]).split(" ")[0],
+        previous_start=str(summary["previous_start"]).split(" ")[0],
+        previous_end=str(summary["previous_end"]).split(" ")[0],
         gmv_current=gmv_current,
         gmv_previous=gmv_previous,
         gmv_delta=gmv_delta,
@@ -455,4 +477,35 @@ def analyze_gmv_change_drivers(
         seller_gains=seller_gains,
         all_drops=all_drops,
         all_gains=all_gains,
+        evidence_sql={
+            "窗口汇总": _build_summary_sql(days),
+            "州·下拉贡献": _build_dimension_driver_sql(days, n, "COALESCE(f.customer_state, 'UNKNOWN')", trend="drop"),
+            "州·拉升贡献": _build_dimension_driver_sql(days, n, "COALESCE(f.customer_state, 'UNKNOWN')", trend="gain"),
+            "品类·下拉贡献": _build_dimension_driver_sql(
+                days,
+                n,
+                "COALESCE(p.product_category_name, 'UNKNOWN')",
+                join_sql="LEFT JOIN products p ON f.product_id = p.product_id",
+                trend="drop",
+            ),
+            "品类·拉升贡献": _build_dimension_driver_sql(
+                days,
+                n,
+                "COALESCE(p.product_category_name, 'UNKNOWN')",
+                join_sql="LEFT JOIN products p ON f.product_id = p.product_id",
+                trend="gain",
+            ),
+            "商家·下拉贡献": _build_dimension_driver_sql(
+                days,
+                n,
+                "COALESCE(CAST(f.seller_id AS VARCHAR), 'UNKNOWN')",
+                trend="drop",
+            ),
+            "商家·拉升贡献": _build_dimension_driver_sql(
+                days,
+                n,
+                "COALESCE(CAST(f.seller_id AS VARCHAR), 'UNKNOWN')",
+                trend="gain",
+            ),
+        },
     )

@@ -101,6 +101,28 @@ class AttemptRecord:
 
 
 @dataclass
+class AnalysisStep:
+    key: str
+    label: str
+    category: Literal["decision", "context", "tool", "validation", "output"]
+    status: Literal["completed", "warning", "failed", "skipped"] = "completed"
+    summary: str = ""
+    tool: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "category": self.category,
+            "status": self.status,
+            "summary": self.summary,
+            "tool": self.tool,
+            "details": self.details,
+        }
+
+
+@dataclass
 class AnalysisRun:
     question: str
     intent: AnalysisIntent
@@ -114,6 +136,7 @@ class AnalysisRun:
     attribution_report: Any | None = None
     validations: list[ValidationResult] = field(default_factory=list)
     attempts: list[AttemptRecord] = field(default_factory=list)
+    steps: list[AnalysisStep] = field(default_factory=list)
     insight: str | None = None
     caveats: list[str] = field(default_factory=list)
     provider: str = ""
@@ -124,6 +147,8 @@ class AnalysisRun:
     failure_stage: str | None = None
     failure_detail: str | None = None
     trace_enabled: bool = False
+    original_question: str | None = None
+    clarification_history: list[dict[str, str]] = field(default_factory=list)
 
     @property
     def validation_passed(self) -> bool:
@@ -150,6 +175,7 @@ class AnalysisRun:
             "sql_source": self.sql_source,
             "result": self.result_summary(),
             "validations": [item.to_dict() for item in self.validations],
+            "steps": [item.to_dict() for item in self.steps],
             "caveats": self.caveats,
             "provider": self.provider,
             "model": self.model,

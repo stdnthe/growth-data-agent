@@ -140,6 +140,50 @@ GROUP BY 1
 ORDER BY 1
 """.strip()
 
+    if "近30天" in question and "客单价" in question and "走势" in question:
+        return """
+SELECT
+  date_trunc('day', order_purchase_ts) AS dt,
+  CASE
+    WHEN COUNT(DISTINCT order_id) = 0 THEN NULL
+    ELSE SUM(line_gmv) / COUNT(DISTINCT order_id)
+  END AS aov
+FROM vw_fact_items
+WHERE order_purchase_ts >= current_date - INTERVAL 30 DAY
+GROUP BY 1
+ORDER BY 1
+""".strip()
+
+    if "近30天" in question and "复购率" in question:
+        return """
+WITH bounds AS (
+  SELECT
+    CAST(MAX(order_purchase_ts) AS DATE) AS end_dt,
+    CAST(MAX(order_purchase_ts) AS DATE) - INTERVAL 29 DAY AS start_dt
+  FROM vw_fact_items
+),
+first_order AS (
+  SELECT customer_unique_id, MIN(CAST(order_purchase_ts AS DATE)) AS first_order_dt
+  FROM vw_fact_items
+  GROUP BY 1
+),
+buyers AS (
+  SELECT DISTINCT f.customer_unique_id, fo.first_order_dt, b.start_dt
+  FROM vw_fact_items f
+  JOIN first_order fo USING (customer_unique_id)
+  CROSS JOIN bounds b
+  WHERE CAST(f.order_purchase_ts AS DATE) BETWEEN b.start_dt AND b.end_dt
+)
+SELECT
+  SUM(CASE WHEN first_order_dt < start_dt THEN 1 ELSE 0 END) AS returning_customers,
+  COUNT(*) AS unique_buyers,
+  CASE
+    WHEN COUNT(*) = 0 THEN NULL
+    ELSE CAST(SUM(CASE WHEN first_order_dt < start_dt THEN 1 ELSE 0 END) AS DOUBLE) / COUNT(*)
+  END AS repeat_purchase_rate
+FROM buyers
+""".strip()
+
     if "上个月" in question and ("订单数" in question or "客单价" in question or "gmv" in q):
         return """
 WITH last_month AS (
