@@ -227,8 +227,6 @@ growth_analysis_run
 
 ## AI Evals
 
-本项目只引用带日期、模型和分母的评测快照。最新可公开结果及原始 JSON 见 [`eval/results/`](eval/results/README.md)；历史条件化指标不作为当前端到端质量结论。
-
 ### 评测原则
 
 | 层次 | 评测对象 |
