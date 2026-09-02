@@ -61,7 +61,7 @@ def run_agent(request: AgentRequest) -> AgentResult:
     OpenAI, StatsigAI, StatsigCreateConfig, StatsigOptions, StatsigUser = _require_optional_deps()
 
     statsig_key = os.environ["STATSIG_SERVER_SECRET_KEY"]
-    openai_api_key = os.environ["OPENAI_API_KEY"]
+    deepseek_api_key = os.environ["DEEPSEEK_API_KEY"]
 
     statsig_options = StatsigOptions()
     statsig_options.environment = os.getenv("STATSIG_ENV", "development")
@@ -74,7 +74,10 @@ def run_agent(request: AgentRequest) -> AgentResult:
     )
     statsig_ai.initialize()
 
-    client = OpenAI(api_key=openai_api_key)
+    client = OpenAI(
+        api_key=deepseek_api_key,
+        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+    )
     user = _build_statsig_user(StatsigUser, request)
 
     started = time.perf_counter()
@@ -86,7 +89,7 @@ def run_agent(request: AgentRequest) -> AgentResult:
     new_agent_enabled = statsig.check_gate(user, "agent_v2_enabled")
 
     routing = statsig.get_dynamic_config(user, "agent_routing")
-    fallback_model = routing.get_string("model", "gpt-4.1-mini")
+    fallback_model = routing.get_string("model", os.getenv("DEEPSEEK_MODEL", "deepseek-chat"))
     tool_enabled = routing.get_bool("tool_enabled", True)
     max_tool_steps = routing.get_integer("max_tool_steps", 4)
 

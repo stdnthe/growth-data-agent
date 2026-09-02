@@ -2,6 +2,7 @@
 .env
 .venv/
 .streamlit/
+.claude/
 __pycache__/
 *.py[cod]
 

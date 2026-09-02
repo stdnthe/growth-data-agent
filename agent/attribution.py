@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,39 +62,21 @@ def _safe_div(num: float, den: float) -> float | None:
     return num / den
 
 
-def _dominant_structural_driver(report: GmvAttributionReport) -> tuple[str, float, float] | None:
-    if report.gmv_delta == 0:
-        return None
-
-    sign = -1 if report.gmv_delta < 0 else 1
-    candidates: list[tuple[str, float]] = []
-
-    if report.order_effect * sign > 0:
-        label = "订单量下降" if sign < 0 else "订单量增长"
-        candidates.append((label, report.order_effect))
-    if report.aov_effect * sign > 0:
-        label = "客单价下降" if sign < 0 else "客单价增长"
-        candidates.append((label, report.aov_effect))
-
-    if not candidates:
-        return None
-
-    label, value = max(candidates, key=lambda x: abs(x[1]))
-    share = abs(value) / abs(report.gmv_delta) if report.gmv_delta != 0 else 0.0
-    return label, value, share
+_LMDI_EPSILON = 1e-9
 
 
-def _top_dimension_point(report: GmvAttributionReport) -> tuple[str, str, float, float] | None:
-    df = report.all_drops if report.gmv_delta < 0 else report.all_gains
-    if df.empty:
-        return None
+def _log_mean(current: float, previous: float) -> float:
+    """Logarithmic mean L(a,b) = (a-b)/(ln a - ln b), with L(a,a) = a.
 
-    row = df.iloc[0]
-    dim_name = str(row["dimension"])
-    dim_value = str(row["dimension_value"])
-    contribution = float(row["contribution"])
-    share = abs(contribution) / abs(report.gmv_delta) if report.gmv_delta != 0 else 0.0
-    return dim_name, dim_value, contribution, share
+    Non-positive inputs are substituted with a small epsilon (Ang's standard
+    LMDI treatment of zero values) so the weight stays well-defined without
+    perturbing any genuinely positive case beyond floating-point noise.
+    """
+    a = current if current > 0 else _LMDI_EPSILON
+    b = previous if previous > 0 else _LMDI_EPSILON
+    if abs(a - b) < 1e-12:
+        return a
+    return (a - b) / (math.log(a) - math.log(b))
 
 
 def _merge_dimension_tables(
@@ -138,22 +121,41 @@ def build_gmv_summary(report: GmvAttributionReport) -> str:
     rate = report.gmv_change_rate
     if rate is not None and report.gmv_delta < 0:
         rate = abs(rate)
-    base = f"本期 GMV {trend} {_fmt_pct(rate)}（变动额 {_fmt_money(report.gmv_delta)}）。"
+    lines = [
+        f"**总体变化：**本期 GMV {trend} **{_fmt_pct(rate)}**，"
+        f"较上期变动 **R$ {_fmt_money(report.gmv_delta)}**。"
+    ]
 
-    structural = _dominant_structural_driver(report)
-    if structural is not None:
-        label, effect, share = structural
-        base += f"主要由{label}驱动，贡献 {_fmt_money(effect)}，占本期变动 {share * 100:.1f}%。"
-
-    top_dim = _top_dimension_point(report)
-    if top_dim is not None:
-        dim_name, dim_value, contribution, share = top_dim
-        dim_value = dim_value.replace("_", " ")
-        base += (
-            f"{dim_name}维度中，{dim_value} 贡献 {_fmt_money(contribution)}，"
-            f"占总变动 {share * 100:.1f}%。"
+    overall_sign = -1 if report.gmv_delta < 0 else 1
+    structural_parts: list[str] = []
+    for label, effect in (("订单量效应", report.order_effect), ("客单价效应", report.aov_effect)):
+        direction = "拉低" if effect < 0 else "拉升"
+        relationship = "贡献度" if effect * overall_sign > 0 else "抵消度"
+        share = abs(effect) / abs(report.gmv_delta)
+        structural_parts.append(
+            f"{label}{direction} **R$ {_fmt_money(abs(effect))}**（{relationship} **{share * 100:.1f}%**）"
         )
-    return base
+    lines.append(f"**一级贡献：**{'；'.join(structural_parts)}。")
+
+    key_df = report.all_drops if report.gmv_delta < 0 else report.all_gains
+    dimension_parts: list[str] = []
+    for _, row in key_df.head(3).iterrows():
+        dimension = str(row["dimension"])
+        value = str(row["dimension_value"]).replace("_", " ")
+        contribution = float(row["contribution"])
+        direction = "拉低" if contribution < 0 else "拉升"
+        share = abs(contribution) / abs(report.gmv_delta)
+        dimension_parts.append(
+            f"{dimension}「{value}」{direction} **R$ {_fmt_money(abs(contribution))}**"
+            f"（占总变动 **{share * 100:.1f}%**）"
+        )
+    if dimension_parts:
+        lines.append(f"**重点细分因素：**{'；'.join(dimension_parts)}。")
+        lines.append(
+            "**口径提醒：**细分因素来自品类、州、商家等不同观察维度，可能覆盖同一批订单，"
+            "用于定位重点对象，不能跨维度直接相加。"
+        )
+    return "\n".join(lines)
 
 
 def _build_summary_sql(window_days: int) -> str:
@@ -383,9 +385,24 @@ def analyze_gmv_change_drivers(
         gmv_delta = gmv_current - gmv_previous
         gmv_change_rate = _safe_pct_change(gmv_current, gmv_previous)
 
-        # Exact decomposition: ΔGMV = (ΔOrders * AOV_prev) + (Orders_current * ΔAOV)
-        order_effect = (orders_current - orders_previous) * (aov_previous or 0.0)
-        aov_effect = orders_current * ((aov_current or 0.0) - (aov_previous or 0.0))
+        # LMDI (Log Mean Divisia Index) additive decomposition of GMV = Orders x AOV.
+        # A logarithmic-mean weight replaces "fix one factor at its previous/current
+        # level" chain substitution, so swapping factor order never changes the
+        # attributed effects. Effective values are epsilon-substituted only when a
+        # factor is non-positive (e.g. a zero-order window); the log-mean weight is
+        # then derived from their product so the additive identity below still holds
+        # exactly against report.gmv_delta, not just approximately.
+        orders_lmdi_current = float(orders_current) if orders_current > 0 else _LMDI_EPSILON
+        orders_lmdi_previous = float(orders_previous) if orders_previous > 0 else _LMDI_EPSILON
+        aov_lmdi_current = aov_current if aov_current and aov_current > 0 else _LMDI_EPSILON
+        aov_lmdi_previous = aov_previous if aov_previous and aov_previous > 0 else _LMDI_EPSILON
+
+        gmv_log_mean = _log_mean(
+            orders_lmdi_current * aov_lmdi_current,
+            orders_lmdi_previous * aov_lmdi_previous,
+        )
+        order_effect = gmv_log_mean * math.log(orders_lmdi_current / orders_lmdi_previous)
+        aov_effect = gmv_log_mean * math.log(aov_lmdi_current / aov_lmdi_previous)
 
         state_drops = _get_dimension_driver_df(
             conn=conn,

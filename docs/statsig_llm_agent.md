@@ -16,7 +16,7 @@ flowchart LR
     S --> G["Feature Gates"]
     S --> C["Configs / Layers"]
     S --> P["Prompts"]
-    A --> O["OpenAI / LLM Provider"]
+    A --> O["DeepSeek API"]
     A --> T["Tools / DB / APIs"]
     A --> E["Agent Telemetry"]
     E --> S
@@ -79,7 +79,7 @@ pip install statsig-python-core statsig-ai
 
 ```bash
 export STATSIG_SERVER_SECRET_KEY="your-server-secret-key"
-export OPENAI_API_KEY="your-openai-api-key"
+export DEEPSEEK_API_KEY="your-deepseek-api-key"
 ```
 
 ## 设计提醒

@@ -75,3 +75,13 @@ class MetricsStore:
             )
 
         return "\n".join(lines)
+
+    def intent_context(self) -> str:
+        """Return the semantic-layer fields needed by intent parsing."""
+        if not self.metrics:
+            self.load()
+
+        return "\n".join(
+            f"- id={metric.id}; name={metric.name_zh}; definition={metric.definition}; grain={metric.grain}"
+            for metric in self.metrics
+        )

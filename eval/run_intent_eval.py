@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
-from agent.intent_router import route
+from agent.intent_router import IntentRoutingError, route
+from agent.llm_sql import resolve_llm_config
+from agent.metrics_store import MetricsStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CASES_PATH = PROJECT_ROOT / "eval" / "intent_cases.jsonl"
+METRICS_PATH = PROJECT_ROOT / "metrics" / "metrics.yml"
 
 
 def main() -> None:
@@ -16,10 +20,30 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
+    runtime = resolve_llm_config()
+    if not runtime["api_key"]:
+        raise SystemExit(
+            f"{runtime['api_key_name']} is required for structured intent eval; "
+            "there is no keyword-routing fallback."
+        )
+    metrics_store = MetricsStore(METRICS_PATH)
+    metrics_store.load()
     cases = [json.loads(line) for line in CASES_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
     results = []
     for case in cases:
-        intent = route(case["question"])
+        try:
+            intent = route(case["question"], metrics_store)
+        except IntentRoutingError as exc:
+            results.append(
+                {
+                    "id": case["id"],
+                    "passed": False,
+                    "failure_stage": "structured_intent",
+                    "failure_detail": str(exc),
+                    "checks": {},
+                }
+            )
+            continue
         checks = {
             "metric": intent.metric == case.get("expected_metric"),
             "workflow": intent.workflow == case["expected_workflow"],
@@ -34,7 +58,13 @@ def main() -> None:
 
     passed = sum(result["passed"] for result in results)
     report = {
-        "evaluation_type": "deterministic_intent_routing",
+        "evaluation_type": "llm_structured_intent_with_deterministic_validation",
+        "evaluation_metadata": {
+            "evaluated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "provider": runtime["provider"],
+            "model": runtime["model"],
+            "intent_contract": "LLM JSON Output + IntentValidator",
+        },
         "summary": {
             "total": len(results),
             "passed": passed,

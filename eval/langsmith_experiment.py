@@ -145,7 +145,7 @@ def run_experiment(dataset_name: str, experiment_prefix: str) -> None:
         experiment_prefix=experiment_prefix,
         metadata={
             "prompts": [os.getenv("AGENT_PROMPT_VERSION", "growth-sql-v2")],
-            "models": [os.getenv("DEEPSEEK_MODEL") or os.getenv("OPENAI_MODEL") or "configured-default"],
+            "models": [os.getenv("DEEPSEEK_MODEL") or "deepseek-chat"],
         },
     )
     print(result)

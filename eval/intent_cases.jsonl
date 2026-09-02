@@ -1,7 +1,7 @@
 {"id": "I01", "question": "近30天GMV走势（按天）", "expected_metric": "gmv", "expected_workflow": "retrieval", "expected_action": "execute", "expected_window_days": 30}
 {"id": "I02", "question": "为什么最近GMV下降？", "expected_metric": "gmv", "expected_workflow": "gmv_attribution", "expected_action": "execute", "expected_window_days": 30}
 {"id": "I03", "question": "最近销售表现怎么样？", "expected_metric": null, "expected_workflow": "retrieval", "expected_action": "clarify", "expected_window_days": 30}
-{"id": "I04", "question": "为什么准时送达率下降？", "expected_metric": "on_time_delivery_rate", "expected_workflow": "retrieval", "expected_action": "confirm", "expected_window_days": 30}
+{"id": "I04", "question": "为什么准时送达率下降？", "expected_metric": "on_time_delivery_rate", "expected_workflow": "fulfillment_diagnosis", "expected_action": "execute", "expected_window_days": 30}
 {"id": "I05", "question": "近90天各州GMV Top 10", "expected_metric": "gmv", "expected_workflow": "retrieval", "expected_action": "execute", "expected_window_days": 90, "expected_dimensions": ["state"]}
 {"id": "I06", "question": "最近6个月每月新增买家数", "expected_metric": "new_customers", "expected_workflow": "retrieval", "expected_action": "execute", "expected_window_days": 180, "expected_grain": "month"}
 {"id": "I07", "question": "近30天复购率是多少", "expected_metric": "repeat_purchase_rate", "expected_workflow": "retrieval", "expected_action": "execute", "expected_window_days": 30}

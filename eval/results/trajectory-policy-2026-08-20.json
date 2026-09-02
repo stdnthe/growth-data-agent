@@ -1,0 +1,232 @@
+{
+  "generated_at": "2026-08-20T10:38:04.709255+00:00",
+  "mode": "deterministic_policy_contract",
+  "model": null,
+  "case_count": 12,
+  "passed": 12,
+  "trajectory_success_rate": 1.0,
+  "results": [
+    {
+      "id": "metric_success",
+      "question": "近30天GMV走势（按天）",
+      "passed": true,
+      "expected_actions": [
+        "query_metric",
+        "finish"
+      ],
+      "actual_actions": [
+        "query_metric",
+        "finish"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "execution_schema_recovery",
+      "question": "近30天GMV走势（按天）",
+      "passed": true,
+      "expected_actions": [
+        "query_metric",
+        "inspect_schema",
+        "query_metric",
+        "finish"
+      ],
+      "actual_actions": [
+        "query_metric",
+        "inspect_schema",
+        "query_metric",
+        "finish"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy",
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "guard_retry",
+      "question": "按州查看GMV",
+      "passed": true,
+      "expected_actions": [
+        "query_metric",
+        "query_metric",
+        "finish"
+      ],
+      "actual_actions": [
+        "query_metric",
+        "query_metric",
+        "finish"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "result_contract_retry",
+      "question": "按月查看复购率",
+      "passed": true,
+      "expected_actions": [
+        "query_metric",
+        "query_metric",
+        "finish"
+      ],
+      "actual_actions": [
+        "query_metric",
+        "query_metric",
+        "finish"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "step_budget_stop",
+      "question": "近30天GMV走势",
+      "passed": true,
+      "expected_actions": [
+        "query_metric",
+        "stop"
+      ],
+      "actual_actions": [
+        "query_metric",
+        "stop"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "gmv_recipe_success",
+      "question": "为什么最近GMV下降？",
+      "passed": true,
+      "expected_actions": [
+        "run_gmv_recipe",
+        "finish"
+      ],
+      "actual_actions": [
+        "run_gmv_recipe",
+        "finish"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "gmv_recipe_validation_stop",
+      "question": "为什么最近GMV下降？",
+      "passed": true,
+      "expected_actions": [
+        "run_gmv_recipe",
+        "stop"
+      ],
+      "actual_actions": [
+        "run_gmv_recipe",
+        "stop"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "fulfillment_recipe_success",
+      "question": "为什么最近准时送达率下降？",
+      "passed": true,
+      "expected_actions": [
+        "run_fulfillment_recipe",
+        "finish"
+      ],
+      "actual_actions": [
+        "run_fulfillment_recipe",
+        "finish"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "fulfillment_recipe_validation_stop",
+      "question": "为什么最近准时送达率下降？",
+      "passed": true,
+      "expected_actions": [
+        "run_fulfillment_recipe",
+        "stop"
+      ],
+      "actual_actions": [
+        "run_fulfillment_recipe",
+        "stop"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "missing_metric_clarify",
+      "question": "最近表现怎么样？",
+      "passed": true,
+      "expected_actions": [
+        "clarify"
+      ],
+      "actual_actions": [
+        "clarify"
+      ],
+      "decision_sources": [
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "unsupported_diagnosis_confirm",
+      "question": "为什么最近评分下降？",
+      "passed": true,
+      "expected_actions": [
+        "clarify"
+      ],
+      "actual_actions": [
+        "clarify"
+      ],
+      "decision_sources": [
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    },
+    {
+      "id": "non_retryable_data_stop",
+      "question": "近30天GMV走势",
+      "passed": true,
+      "expected_actions": [
+        "query_metric",
+        "stop"
+      ],
+      "actual_actions": [
+        "query_metric",
+        "stop"
+      ],
+      "decision_sources": [
+        "policy",
+        "policy"
+      ],
+      "planner_fallback_count": 0
+    }
+  ]
+}

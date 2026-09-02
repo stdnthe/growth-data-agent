@@ -8,6 +8,16 @@ import pandas as pd
 
 
 IntentAction = Literal["execute", "clarify", "confirm"]
+AgentAction = Literal[
+    "query_metric",
+    "inspect_schema",
+    "run_gmv_recipe",
+    "run_fulfillment_recipe",
+    "finish",
+    "clarify",
+    "unsupported",
+    "stop",
+]
 RunStatus = Literal[
     "created",
     "needs_clarification",
@@ -21,7 +31,7 @@ RunStatus = Literal[
 @dataclass
 class AnalysisIntent:
     task_type: Literal["metric_query", "metric_diagnosis"]
-    workflow: Literal["retrieval", "gmv_attribution"]
+    workflow: Literal["retrieval", "gmv_attribution", "fulfillment_diagnosis"]
     metric: str | None = None
     metrics: list[str] = field(default_factory=list)
     time_range: str | None = None
@@ -123,6 +133,30 @@ class AnalysisStep:
 
 
 @dataclass
+class AgentDecision:
+    sequence: int
+    action: AgentAction
+    reason_summary: str
+    tool: str | None = None
+    completion_reason: str | None = None
+    decision_source: Literal["llm", "policy", "fallback_policy"] = "policy"
+    policy_status: Literal["approved", "corrected"] = "approved"
+    parameters: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "action": self.action,
+            "reason_summary": self.reason_summary,
+            "tool": self.tool,
+            "completion_reason": self.completion_reason,
+            "decision_source": self.decision_source,
+            "policy_status": self.policy_status,
+            "parameters": self.parameters,
+        }
+
+
+@dataclass
 class AnalysisRun:
     question: str
     intent: AnalysisIntent
@@ -134,9 +168,13 @@ class AnalysisRun:
     sql_source: str | None = None
     result: pd.DataFrame | None = None
     attribution_report: Any | None = None
+    fulfillment_report: Any | None = None
     validations: list[ValidationResult] = field(default_factory=list)
     attempts: list[AttemptRecord] = field(default_factory=list)
     steps: list[AnalysisStep] = field(default_factory=list)
+    decisions: list[AgentDecision] = field(default_factory=list)
+    active_capabilities: list[str] = field(default_factory=list)
+    context_bundle: dict[str, Any] = field(default_factory=dict)
     insight: str | None = None
     caveats: list[str] = field(default_factory=list)
     provider: str = ""
@@ -147,6 +185,8 @@ class AnalysisRun:
     failure_stage: str | None = None
     failure_detail: str | None = None
     trace_enabled: bool = False
+    agent_runtime: str = "langgraph"
+    max_steps: int = 3
     original_question: str | None = None
     clarification_history: list[dict[str, str]] = field(default_factory=list)
 
@@ -176,6 +216,9 @@ class AnalysisRun:
             "result": self.result_summary(),
             "validations": [item.to_dict() for item in self.validations],
             "steps": [item.to_dict() for item in self.steps],
+            "decisions": [item.to_dict() for item in self.decisions],
+            "active_capabilities": self.active_capabilities,
+            "context_bundle": self.context_bundle,
             "caveats": self.caveats,
             "provider": self.provider,
             "model": self.model,
@@ -184,4 +227,7 @@ class AnalysisRun:
             "latency_ms": self.latency_ms,
             "failure_stage": self.failure_stage,
             "failure_detail": self.failure_detail,
+            "agent_runtime": self.agent_runtime,
+            "max_steps": self.max_steps,
+            "has_fulfillment_report": self.fulfillment_report is not None,
         }

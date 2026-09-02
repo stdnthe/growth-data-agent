@@ -4,6 +4,8 @@ import os
 import re
 import subprocess
 import sys
+from ipaddress import ip_address
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -14,6 +16,31 @@ load_dotenv()
 
 
 DATA_MAX_DATE_EXPR = "(SELECT CAST(MAX(order_purchase_ts) AS DATE) FROM orders)"
+SUPPORTED_LLM_PROVIDERS = {"deepseek", "openai", "openai_compatible"}
+
+
+def validate_compatible_base_url(base_url: str | None) -> tuple[bool, str | None]:
+    value = (base_url or "").strip()
+    if not value:
+        return False, "请填写兼容服务的 Base URL。"
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False, "Base URL 必须是有效的 HTTPS 地址。"
+    hostname = parsed.hostname.lower()
+    if hostname == "localhost" or hostname.endswith((".local", ".internal")):
+        return False, "Base URL 不能指向本机或内部网络。"
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        address = None
+    if address and (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+    ):
+        return False, "Base URL 不能指向私有或保留网络地址。"
+    return True, None
 
 
 def _read_key_from_keychain(service_name: str, account_name: str | None = None) -> str:
@@ -34,28 +61,67 @@ def _read_key_from_keychain(service_name: str, account_name: str | None = None) 
     return result.stdout.strip()
 
 
-def resolve_llm_config(model: str | None = None) -> dict[str, str | None]:
-    provider = os.getenv("LLM_PROVIDER", "deepseek").strip().lower()
+def resolve_llm_config(
+    model: str | None = None,
+    *,
+    provider: str | None = None,
+    api_key_override: str | None = None,
+    base_url_override: str | None = None,
+    allow_stored_api_key: bool = True,
+) -> dict[str, str | None]:
+    provider_value = (provider or os.getenv("LLM_PROVIDER", "deepseek")).strip().lower()
+    resolved_provider = provider_value.replace("-", "_")
+    if resolved_provider == "compatible":
+        resolved_provider = "openai_compatible"
+    if resolved_provider not in SUPPORTED_LLM_PROVIDERS:
+        supported = ", ".join(sorted(SUPPORTED_LLM_PROVIDERS))
+        raise ValueError(f"Unsupported LLM provider {provider_value!r}; expected one of: {supported}")
 
-    if provider == "openai":
-        resolved_provider = "openai"
-        resolved_model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
-        api_key_name = "OPENAI_API_KEY"
-        keychain_service = os.getenv("OPENAI_KEYCHAIN_SERVICE", "growth-analysis-agent/OPENAI_API_KEY").strip()
-        keychain_account = os.getenv("OPENAI_KEYCHAIN_ACCOUNT", os.getenv("USER", "")).strip()
-    else:
-        resolved_provider = "deepseek"
-        resolved_model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-        api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
-        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").strip() or None
-        api_key_name = "DEEPSEEK_API_KEY"
-        keychain_service = os.getenv("DEEPSEEK_KEYCHAIN_SERVICE", "growth-analysis-agent/DEEPSEEK_API_KEY").strip()
-        keychain_account = os.getenv("DEEPSEEK_KEYCHAIN_ACCOUNT", os.getenv("USER", "")).strip()
+    provider_defaults = {
+        "deepseek": {
+            "prefix": "DEEPSEEK",
+            "model": "deepseek-chat",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+        "openai": {
+            "prefix": "OPENAI",
+            "model": "gpt-4.1-mini",
+            "base_url": "https://api.openai.com/v1",
+        },
+        "openai_compatible": {
+            "prefix": "OPENAI_COMPATIBLE",
+            "model": "",
+            "base_url": "",
+        },
+    }
+    defaults = provider_defaults[resolved_provider]
+    prefix = str(defaults["prefix"])
+    resolved_model = (
+        (model or "").strip()
+        or os.getenv(f"{prefix}_MODEL", "").strip()
+        or str(defaults["model"])
+    )
+    request_api_key = (api_key_override or "").strip()
+    api_key_name = f"{prefix}_API_KEY"
+    environment_api_key = os.getenv(api_key_name, "").strip() if allow_stored_api_key else ""
+    api_key = request_api_key or environment_api_key
+    base_url = (
+        (base_url_override or "").strip()
+        or os.getenv(f"{prefix}_BASE_URL", "").strip()
+        or str(defaults["base_url"])
+        or None
+    )
+    keychain_service = os.getenv(
+        f"{prefix}_KEYCHAIN_SERVICE",
+        f"growth-analysis-agent/{api_key_name}",
+    ).strip()
+    keychain_account = os.getenv(
+        f"{prefix}_KEYCHAIN_ACCOUNT",
+        os.getenv("USER", ""),
+    ).strip()
 
-    api_key_source = "env"
-    if not api_key:
+    api_key_source = "request" if request_api_key else "env" if environment_api_key else "missing"
+    if not api_key and not request_api_key and allow_stored_api_key:
         api_key = _read_key_from_keychain(keychain_service, keychain_account)
         api_key_source = "keychain" if api_key else "missing"
 
@@ -308,9 +374,17 @@ def generate_sql(
     metrics_context: str,
     use_llm: bool = True,
     model: str | None = None,
+    api_key: str | None = None,
+    provider: str | None = None,
+    base_url: str | None = None,
     retry_context: str | None = None,
 ) -> tuple[str, str]:
-    config = resolve_llm_config(model=model)
+    config = resolve_llm_config(
+        model=model,
+        provider=provider,
+        api_key_override=api_key,
+        base_url_override=base_url,
+    )
     provider = str(config["provider"])
     resolved_model = str(config["model"])
     api_key = str(config["api_key"] or "")

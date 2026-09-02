@@ -40,7 +40,7 @@ def resolve_clarification(
 
     metric_answer = normalized.lower().replace(" ", "")
     if metric_answer in {"gmv", "成交总额", "销售额"}:
-        return "近30天GMV走势（按天）"
+        return "近30天GMV趋势（按天）"
     if metric_answer in {"订单量", "订单数", "支付订单数"}:
         return "近30天订单量走势（按天）"
     if metric_answer in {"aov", "客单价"}:

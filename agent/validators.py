@@ -6,6 +6,8 @@ from typing import Iterable
 import pandas as pd
 
 from .attribution import GmvAttributionReport
+from .context_builder import ContextBundle
+from .fulfillment import FulfillmentDiagnosisReport
 from .models import AnalysisIntent, ValidationResult
 
 
@@ -54,6 +56,7 @@ def _result(name: str, passed: bool, message: str, severity: str = "error", **de
 def validate_retrieval_result(
     df: pd.DataFrame,
     intent: AnalysisIntent,
+    context_bundle: ContextBundle | None = None,
 ) -> list[ValidationResult]:
     validations = [
         _result(
@@ -133,6 +136,25 @@ def validate_retrieval_result(
             )
         )
 
+    if context_bundle and context_bundle.output_contract.required_columns:
+        actual_columns = {str(col).lower() for col in df.columns}
+        missing_contract_fields = [
+            label
+            for label, aliases in context_bundle.output_contract.required_columns.items()
+            if not any(alias.lower() in actual_columns for alias in aliases)
+        ]
+        validations.append(
+            _result(
+                "output_contract",
+                not missing_contract_fields,
+                "结果满足 ContextBundle 输出契约。"
+                if not missing_contract_fields
+                else f"结果缺少输出契约字段：{', '.join(missing_contract_fields)}。",
+                expected=context_bundle.output_contract.to_dict(),
+                actual=sorted(actual_columns),
+            )
+        )
+
     return validations
 
 
@@ -186,6 +208,67 @@ def validate_gmv_attribution(report: GmvAttributionReport) -> list[ValidationRes
             "下拉与拉升贡献方向一致。"
             if drop_directions_valid and gain_directions_valid
             else "维度贡献方向与分类不一致。",
+        ),
+    ]
+
+
+def validate_fulfillment_diagnosis(
+    report: FulfillmentDiagnosisReport,
+) -> list[ValidationResult]:
+    tolerance = 1e-10
+    effects_diff = abs((report.mix_effect + report.within_effect) - report.on_time_rate_delta)
+    contribution_diff = abs(
+        float(report.state_contributions["contribution"].sum()) - report.on_time_rate_delta
+    )
+    windows_valid = bool(
+        report.current_start
+        and report.current_end
+        and report.previous_start
+        and report.previous_end
+        and report.current_start <= report.current_end
+        and report.previous_start <= report.previous_end
+        and report.previous_end < report.current_start
+    )
+    rates_valid = all(
+        0 <= value <= 1
+        for value in (report.on_time_rate_current, report.on_time_rate_previous)
+    )
+    orders_valid = report.delivered_orders_current >= 0 and report.delivered_orders_previous >= 0
+    return [
+        _result(
+            "fulfillment_windows_disjoint",
+            windows_valid,
+            "当前期与对比期履约窗口有效且互不重叠。"
+            if windows_valid
+            else "履约诊断窗口存在重叠或顺序错误。",
+        ),
+        _result(
+            "on_time_rate_range",
+            rates_valid,
+            "准时送达率位于 0 到 1 之间。" if rates_valid else "准时送达率超出合理范围。",
+        ),
+        _result(
+            "delivered_orders_non_negative",
+            orders_valid,
+            "履约订单数为非负值。" if orders_valid else "履约订单数出现负值。",
+        ),
+        _result(
+            "fulfillment_mix_within_additive",
+            effects_diff <= tolerance,
+            "结构效应与组内效应可精确加和至准时送达率变化。"
+            if effects_diff <= tolerance
+            else "结构/组内分解无法加和，请停止输出诊断结论。",
+            difference=effects_diff,
+            tolerance=tolerance,
+        ),
+        _result(
+            "fulfillment_state_contributions_additive",
+            contribution_diff <= tolerance,
+            "客户州贡献可精确加和至整体准时送达率变化。"
+            if contribution_diff <= tolerance
+            else "客户州贡献无法加和，请停止输出诊断结论。",
+            difference=contribution_diff,
+            tolerance=tolerance,
         ),
     ]
 
