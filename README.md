@@ -182,6 +182,7 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 - 只保存在当前 Streamlit 会话的服务器内存中，不写入项目文件、反馈或 `AnalysisRun`；
 - 显式传递给意图识别、Agent Controller 与 Text-to-SQL，不通过进程级环境变量共享；
 - 请求由部署服务器转发给用户选择的模型服务；公开 UI 强制使用访客会话 Key，不读取部署环境中的模型 Key；
+- DeepSeek 和 OpenAI 使用项目内置的官方 API 地址与默认模型，不继承服务器上的代理地址；
 - 自定义兼容服务必须使用公开 HTTPS 地址，明显的本机、私网和保留地址会被拒绝。
 
 ### 4. 启动

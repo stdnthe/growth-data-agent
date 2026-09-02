@@ -31,6 +31,17 @@ LLM_PROVIDER_LABELS = {
     "openai": "OpenAI",
     "openai_compatible": "OpenAI-compatible",
 }
+PUBLIC_LLM_DEFAULTS = {
+    "deepseek": {
+        "model": "deepseek-chat",
+        "base_url": "https://api.deepseek.com/v1",
+    },
+    "openai": {
+        "model": "gpt-4.1-mini",
+        "base_url": "https://api.openai.com/v1",
+    },
+    "openai_compatible": {"model": "", "base_url": ""},
+}
 
 SAMPLE_QUESTIONS = [
     "近30天GMV趋势（按天）",
@@ -626,10 +637,11 @@ def _pipeline_config(
 
 
 def _start_analysis(question: str, config: PipelineConfig) -> None:
+    st.session_state.pop("analysis_error", None)
     try:
         run = execute_analysis(question, config)
     except IntentRoutingError as exc:
-        st.error(str(exc))
+        st.session_state["analysis_error"] = str(exc)
         st.session_state.pop("pending_clarification", None)
         st.session_state.pop("last_analysis_run", None)
         return
@@ -760,21 +772,22 @@ def _render_llm_settings() -> tuple[dict[str, str | None], bool]:
             key="llm_provider",
         )
         provider_label = LLM_PROVIDER_LABELS[provider]
-        provider_runtime = resolve_llm_config(provider=provider, allow_stored_api_key=False)
-        model = st.text_input(
-            "模型名称",
-            value=str(provider_runtime["model"] or ""),
-            key=f"{provider}_model",
-            placeholder="输入模型 ID",
-        ).strip()
-        base_url: str | None = None
+        public_defaults = PUBLIC_LLM_DEFAULTS[provider]
+        model = str(public_defaults["model"])
+        base_url: str | None = str(public_defaults["base_url"]) or None
         if provider == "openai_compatible":
             base_url = st.text_input(
                 "Base URL",
-                value=str(provider_runtime["base_url"] or ""),
+                value="",
                 key="openai_compatible_base_url",
                 placeholder="https://example.com/v1",
             ).strip() or None
+            model = st.text_input(
+                "模型名称",
+                value="",
+                key="openai_compatible_model",
+                placeholder="输入模型 ID",
+            ).strip()
 
         api_key_state_key = f"{provider}_api_key"
         session_api_key = st.text_input(
@@ -862,6 +875,10 @@ def main() -> None:
             st.rerun()
 
     _render_clarification(config)
+
+    analysis_error = st.session_state.get("analysis_error")
+    if analysis_error:
+        st.error(str(analysis_error))
 
     run = st.session_state.get("last_analysis_run")
     if isinstance(run, AnalysisRun):
